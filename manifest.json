@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "TreeClip 文本批量选择器",
+  "version": "1.2",
+  "description": "强大的文本批量选择工具，用Shift+点击/框选/F键/搜索轻松选择多个元素，提取文本内容。结合层级导航、内部元素选择、层级绑定、自定义输出格式等功能，提升文本复制效率。",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "TreeClip 文本批量选择器",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ],
+  "permissions": ["clipboardWrite", "storage"]
+} 
