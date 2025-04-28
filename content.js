@@ -51,6 +51,18 @@ let removeEnglish = false;      // 移除英文字母
 let removeChinese = false;      // 移除中文字符
 let removeNumbers = false;      // 移除数字
 let removeDuplicates = false;     // 移除重复项
+// 新增：是否启用实时复制
+let isRealtimeCopyEnabled = true; // 默认开启
+
+// 自定义快捷键配置
+let selectKeyConfig = { keys: ['Shift'] }; // 默认选择键为Shift
+let typeSelectKeyConfig = { keys: ['f'] }; // 默认选择相同类型的键为F
+let copyKeyConfig = { keys: ['Control', 'c'] }; // 默认复制组合键为Ctrl+C
+let isShowingKeyConfig = false; // 是否正在显示快捷键配置面板
+let isCapturingKeys = false; // 是否正在捕获按键
+let currentCaptureTarget = ''; // 当前正在捕获按键的目标
+let lastCaptureTarget = ''; // 最后一次捕获按键的目标，用于显示保存效果
+let isCopyKeyPressed = false; // 跟踪复制键是否处于按下状态
 
 // UI状态：是否最小化
 let isUIMinimized = false; // 默认为展开状态
@@ -62,6 +74,8 @@ let isHierarchyExpanded = false;
 let isOutputFormatExpanded = false;
 // 搜索区块是否展开
 let isSearchExpanded = false;
+// 快捷键配置区块是否展开
+let isKeyConfigExpanded = false;
 
 // =============================================
 // 文本搜索相关状态变量
@@ -76,7 +90,7 @@ let currentSearchResultIndex = -1; // 当前高亮的搜索结果索引
 // 计算层级元素的深度和缩进
 function getAdjustedLevelIndent(j, i, needCollapse, parentChain) {
   let level;
-  
+
   if (needCollapse) {
     // 在省略视图中，根据元素在视图中的位置计算缩进
     if (j < 2) {
@@ -91,9 +105,9 @@ function getAdjustedLevelIndent(j, i, needCollapse, parentChain) {
     // 完全展开时，使用实际的DOM树深度
     level = parentChain.length - 1 - i;
   }
-  
+
   const indent = level * 12; // 缩进量
-  
+
   return { level, indent };
 }
 
@@ -101,24 +115,104 @@ function getAdjustedLevelIndent(j, i, needCollapse, parentChain) {
 // 事件监听系统 - 处理键盘和鼠标事件的核心功能
 // 管理Shift键状态，并处理快捷键操作
 // =============================================
+// 检查是否按下了指定的组合键
+function isKeyCombinationPressed(event, keyConfig) {
+  // 如果没有配置键，返回false
+  if (!keyConfig || !keyConfig.keys || keyConfig.keys.length === 0) {
+    return false;
+  }
+
+  // 检查所有键是否都被按下
+  // 对于修饰键，我们需要特殊处理
+  for (const key of keyConfig.keys) {
+    const lowerKey = key.toLowerCase();
+
+    // 检查修饰键
+    if (lowerKey === 'control' || lowerKey === 'ctrl') {
+      if (!event.ctrlKey && !event.metaKey) return false;
+    }
+    else if (lowerKey === 'alt') {
+      if (!event.altKey) return false;
+    }
+    else if (lowerKey === 'shift') {
+      if (!event.shiftKey) return false;
+    }
+    else if (lowerKey === 'meta') {
+      if (!event.metaKey) return false;
+    }
+    // 检查普通键
+    else if (event.key.toLowerCase() !== lowerKey) {
+      // 特殊情况：空格键
+      if (lowerKey === 'space' && event.key === ' ') {
+        // 空格键匹配成功，继续检查
+        continue;
+      }
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // 监听键盘按下事件
 document.addEventListener('keydown', function(event) {
-  // 按下Shift键
-  if (event.key === 'Shift') {
+  // 如果正在配置快捷键，不处理其他键盘事件
+  if (isShowingKeyConfig) {
+    // 如果正在捕获按键，处理按键捕获逻辑
+    if (isCapturingKeys) {
+      handleKeyCaptureInput(event);
+      return;
+    }
+    return;
+  }
+
+  // 按下选择键
+  const isSelectKeyPressed = isKeyCombinationPressed(event, selectKeyConfig);
+
+  // 只有在之前未按下的情况下才设置状态
+  if (isSelectKeyPressed && !isShiftPressed) {
     isShiftPressed = true;
     // 添加临时样式到body，用于鼠标样式
     document.body.classList.add('batch-selector-shift-pressed');
   }
-  
-  // 处理Ctrl+C组合键 - 复制已选中的内容
-  if ((event.ctrlKey || event.metaKey) && (event.key === 'c' || event.key === 'C') && selectedElements.length > 0) {
-    event.preventDefault();
-    // 主动更新剪贴板内容
-    updateClipboard();
-    // 显示复制成功提示
-    showTemporaryMessage('已复制选中内容到剪贴板');
+  // 如果之前按下了但现在没有按下完整组合键，则释放状态
+  else if (!isSelectKeyPressed && isShiftPressed) {
+    isShiftPressed = false;
+    document.body.classList.remove('batch-selector-shift-pressed');
+
+    // 如果正在框选，取消框选
+    if (isSelecting) {
+      cancelBoxSelection();
+    }
   }
-  
+
+  // 处理复制组合键 - 复制已选中的内容
+  const isCopyKeyCombinationPressed = isKeyCombinationPressed(event, copyKeyConfig);
+
+  // 如果复制键被按下，且之前不是按下状态，且有选中元素
+  if (isCopyKeyCombinationPressed && !isCopyKeyPressed && selectedElements.length > 0) {
+    event.preventDefault();
+    // 先获取处理后的文本
+    const textToCopy = updateClipboard();
+    // 然后强制写入剪贴板，无论实时复制是否开启
+    if (textToCopy !== undefined && textToCopy !== null) { // 确保有内容可写
+        navigator.clipboard.writeText(textToCopy)
+            .then(() => {
+                // 显示复制成功提示
+                showTemporaryMessage('已复制选中内容到剪贴板');
+            })
+            .catch(() => {
+                 showTemporaryMessage('复制到剪贴板失败');
+                // console.error('复制组合键复制失败');
+            });
+    } else {
+        showTemporaryMessage('没有内容可复制');
+    }
+  }
+
+  // 更新复制键状态
+  isCopyKeyPressed = isCopyKeyCombinationPressed;
+
   // 按下ESC键取消选择
   if (event.key === 'Escape') {
     // 如果正在框选，取消框选
@@ -128,39 +222,36 @@ document.addEventListener('keydown', function(event) {
       cancelSelection();
     }
   }
-  
-  // 快捷键: F - 选择所有元素（两种触发方式）
-  // 1. 在有选中元素的情况下直接按F
-  // 2. 按住Shift+F（保留原有功能）
-  if ((event.key === 'f' || event.key === 'F') && 
-      (selectedElements.length > 0) && 
+
+  // 快捷键: 选择相同类型的元素
+  if (isKeyCombinationPressed(event, typeSelectKeyConfig) &&
+      (selectedElements.length > 0) &&
       (!isViewingChildren) && // 在查看子元素时不触发
-      (document.activeElement?.id !== 'batch-selector-search-input') // 焦点不在搜索框时才触发
-      ) { 
+      (document.activeElement?.id !== 'batch-selector-search-input')) { // 焦点不在搜索框时才触发
     event.preventDefault();
     selectAllElements();
   }
-  
-  // 快捷键: Shift+向上键 - 扩大选择范围
-  if (isShiftPressed && event.key === 'ArrowUp' && selectedElements.length > 0) {
+
+  // 快捷键: Shift+向上键 - 扩大选择范围（固定使用Shift键）
+  if (event.shiftKey && event.key === 'ArrowUp' && selectedElements.length > 0) {
     event.preventDefault();
     moveUp();
   }
-  
-  // 快捷键: Shift+向下键 - 缩小选择范围
-  if (isShiftPressed && event.key === 'ArrowDown' && selectedElements.length > 0) {
+
+  // 快捷键: Shift+向下键 - 缩小选择范围（固定使用Shift键）
+  if (event.shiftKey && event.key === 'ArrowDown' && selectedElements.length > 0) {
     event.preventDefault();
     moveDown();
   }
-  
-  // 快捷键: Shift+向右键 - 查看元素内部内容
-  if (isShiftPressed && event.key === 'ArrowRight' && selectedElements.length > 0) {
+
+  // 快捷键: Shift+向右键 - 查看元素内部内容（固定使用Shift键）
+  if (event.shiftKey && event.key === 'ArrowRight' && selectedElements.length > 0) {
     event.preventDefault();
     viewInside();
   }
-  
-  // 快捷键: Shift+向左键 - 返回父元素视图
-  if (isShiftPressed && event.key === 'ArrowLeft' && isViewingChildren) {
+
+  // 快捷键: Shift+向左键 - 返回父元素视图（固定使用Shift键）
+  if (event.shiftKey && event.key === 'ArrowLeft' && isViewingChildren) {
     event.preventDefault();
     returnToParentView();
   }
@@ -168,16 +259,60 @@ document.addEventListener('keydown', function(event) {
 
 // 监听键盘释放事件
 document.addEventListener('keyup', function(event) {
-  if (event.key === 'Shift') {
-    isShiftPressed = false;
-    // 移除临时样式
-    document.body.classList.remove('batch-selector-shift-pressed');
-   
-    consecutiveSameTypeElements = [];
-    
-    // 如果正在框选，取消框选
-    if (isSelecting) {
-      cancelBoxSelection();
+  // 如果正在配置快捷键，不处理其他键盘事件
+  if (isShowingKeyConfig) {
+    return;
+  }
+
+  // 获取当前按键的标准化名称
+  let keyName = event.key;
+
+  // 标准化按键名称
+  if (keyName === 'Control') keyName = 'Ctrl';
+  if (keyName === ' ') keyName = 'Space';
+  if (keyName === 'Meta') keyName = 'Meta';
+
+  // 检查是否释放了选择键中的任何一个键
+  if (selectKeyConfig && selectKeyConfig.keys) {
+    // 检查释放的键是否在选择键配置中
+    const keyInConfig = selectKeyConfig.keys.some(k => k.toLowerCase() === keyName.toLowerCase());
+
+    // 检查修饰键特殊情况
+    const isCtrlReleased = (keyName === 'Ctrl' && selectKeyConfig.keys.includes('Ctrl'));
+    const isShiftReleased = (keyName === 'Shift' && selectKeyConfig.keys.includes('Shift'));
+    const isAltReleased = (keyName === 'Alt' && selectKeyConfig.keys.includes('Alt'));
+    const isMetaReleased = (keyName === 'Meta' && selectKeyConfig.keys.includes('Meta'));
+
+    // 如果释放的是配置中的任何键，或者是修饰键特殊情况
+    if (keyInConfig || isCtrlReleased || isShiftReleased || isAltReleased || isMetaReleased) {
+      isShiftPressed = false;
+      // 移除临时样式
+      document.body.classList.remove('batch-selector-shift-pressed');
+
+      consecutiveSameTypeElements = [];
+
+      // 如果正在框选，取消框选
+      if (isSelecting) {
+        cancelBoxSelection();
+      }
+    }
+  }
+
+  // 检查是否释放了复制键中的任何一个键
+  if (copyKeyConfig && copyKeyConfig.keys) {
+    // 检查释放的键是否在复制键配置中
+    const keyInConfig = copyKeyConfig.keys.some(k => k.toLowerCase() === keyName.toLowerCase());
+
+    // 检查修饰键特殊情况
+    const isCtrlReleased = (keyName === 'Ctrl' && copyKeyConfig.keys.includes('Ctrl'));
+    const isShiftReleased = (keyName === 'Shift' && copyKeyConfig.keys.includes('Shift'));
+    const isAltReleased = (keyName === 'Alt' && copyKeyConfig.keys.includes('Alt'));
+    const isMetaReleased = (keyName === 'Meta' && copyKeyConfig.keys.includes('Meta'));
+
+    // 如果释放的是配置中的任何键，或者是修饰键特殊情况
+    if (keyInConfig || isCtrlReleased || isShiftReleased || isAltReleased || isMetaReleased) {
+      // 重置复制键状态
+      isCopyKeyPressed = false;
     }
   }
 });
@@ -188,7 +323,7 @@ style.textContent = `
   .batch-selector-shift-pressed {
     cursor: crosshair !important;
   }
-  .batch-selector-shift-pressed a, 
+  .batch-selector-shift-pressed a,
   .batch-selector-shift-pressed button,
   .batch-selector-shift-pressed input,
   .batch-selector-shift-pressed [role="button"],
@@ -243,39 +378,45 @@ document.head.appendChild(searchHighlightStyle);
 // =============================================
 // 监听鼠标按下事件 - 捕获阶段
 document.addEventListener('mousedown', function(event) {
+  // 如果正在配置快捷键，不处理其他鼠标事件
+  if (isShowingKeyConfig) {
+    return;
+  }
+
   if (isShiftPressed) {
     // 检查是否点击或其父元素是扩展的UI元素
-    if (event.target.closest('.batch-selector-ui') || 
+    if (event.target.closest('.batch-selector-ui') ||
         event.target.id === 'batch-selector-notification' ||
         event.target.id === 'batch-selector-info' ||
         event.target.id === 'batch-selector-prompt' ||
-        event.target.id === 'batch-selector-global-msg') {
+        event.target.id === 'batch-selector-global-msg' ||
+        event.target.id === 'batch-selector-key-config') {
       // 允许UI元素正常点击，但不处理选择逻辑
       return;
     }
-    
+
     // 左键拖动开始框选
     if (event.button === 0) {
       // 阻止默认行为和事件传播
       event.preventDefault();
       event.stopPropagation();
-      
+
       // 记录开始位置（考虑页面滚动位置）
       startX = event.clientX + window.pageXOffset;
       startY = event.clientY + window.pageYOffset;
-      
+
       // 开始框选
       startBoxSelection();
     }
-    
+
     // 对于链接和按钮等交互元素，禁用点击行为
-    if (event.target.tagName === 'A' || 
-        event.target.tagName === 'BUTTON' || 
-        event.target.tagName === 'INPUT' || 
+    if (event.target.tagName === 'A' ||
+        event.target.tagName === 'BUTTON' ||
+        event.target.tagName === 'INPUT' ||
         event.target.hasAttribute('onclick') ||
         event.target.getAttribute('role') === 'button') {
       event.target.classList.add('batch-selector-prevent-events');
-      
+
       // 恢复正常行为的定时器
       setTimeout(() => {
         event.target.classList.remove('batch-selector-prevent-events');
@@ -286,10 +427,15 @@ document.addEventListener('mousedown', function(event) {
 
 // 监听鼠标移动事件 - 捕获阶段
 document.addEventListener('mousemove', function(event) {
+  // 如果正在配置快捷键，不处理其他鼠标事件
+  if (isShowingKeyConfig) {
+    return;
+  }
+
   if (isSelecting && isShiftPressed) {
     // 更新选择框（考虑页面滚动位置）
     updateBoxSelection(event.clientX + window.pageXOffset, event.clientY + window.pageYOffset);
-    
+
     event.preventDefault();
     event.stopPropagation();
   }
@@ -297,10 +443,15 @@ document.addEventListener('mousemove', function(event) {
 
 // 监听鼠标释放事件 - 捕获阶段
 document.addEventListener('mouseup', function(event) {
+  // 如果正在配置快捷键，不处理其他鼠标事件
+  if (isShowingKeyConfig) {
+    return;
+  }
+
   if (isSelecting && isShiftPressed) {
     // 完成框选
     finishBoxSelection();
-    
+
     event.preventDefault();
     event.stopPropagation();
   }
@@ -313,7 +464,7 @@ document.addEventListener('mouseup', function(event) {
 function startBoxSelection() {
   // 设置状态为正在选择
   isSelecting = true;
-  
+
   // 创建选择框元素
   selectBox = document.createElement('div');
   selectBox.id = 'batch-selector-box';
@@ -326,7 +477,7 @@ function startBoxSelection() {
   selectBox.style.width = '0';
   selectBox.style.height = '0';
   selectBox.style.pointerEvents = 'none'; // 防止框选择框本身干扰选择
-  
+
   // 添加到文档
   document.body.appendChild(selectBox);
 }
@@ -334,15 +485,15 @@ function startBoxSelection() {
 // 更新选择框位置和大小
 function updateBoxSelection(currentX, currentY) {
   if (!selectBox) return;
-  
+
   // 计算框的位置和大小
   const width = Math.abs(currentX - startX);
   const height = Math.abs(currentY - startY);
-  
+
   // 计算左上角坐标（考虑向不同方向拖动）
   const left = Math.min(startX, currentX);
   const top = Math.min(startY, currentY);
-  
+
   // 更新框的样式
   selectBox.style.width = width + 'px';
   selectBox.style.height = height + 'px';
@@ -353,10 +504,10 @@ function updateBoxSelection(currentX, currentY) {
 // 完成框选择
 function finishBoxSelection() {
   if (!selectBox) return;
-  
+
   // 获取选择框的位置和大小
   const boxRect = selectBox.getBoundingClientRect();
-  
+
   // 调整boxRect考虑滚动位置
   const adjustedBoxRect = {
     left: boxRect.left + window.pageXOffset,
@@ -366,23 +517,25 @@ function finishBoxSelection() {
     width: boxRect.width,
     height: boxRect.height
   };
-  
+
   // 查找框内的所有元素
   const elementsInBox = findElementsInBox(adjustedBoxRect);
-  
+
   // 如果找到元素，添加到选中列表
   if (elementsInBox.length > 0) {
-    // 检查是否要清除当前选择（如果没有按住Shift键）
-    if (!event.shiftKey) {
-      // 清除当前选择
-      selectedElements.forEach(el => {
-        if (el && el.style) {
-          el.style.outline = '';
-        }
-      });
-      selectedElements = [];
-    }
-    
+    // 检查是否要清除当前选择（如果没有按住选择键）
+    // 注意：这里不再使用event.shiftKey，因为我们使用的是自定义选择键
+    // 由于框选时isShiftPressed一定为true，所以这里不需要额外检查
+    // 如果需要在框选时按住其他键来追加选择，可以在这里添加检查
+
+    // 清除当前选择
+    selectedElements.forEach(el => {
+      if (el && el.style) {
+        el.style.outline = '';
+      }
+    });
+    selectedElements = [];
+
     // 添加框内元素到选中列表
     elementsInBox.forEach(el => {
       // 如果元素未被选中，添加它
@@ -391,29 +544,29 @@ function finishBoxSelection() {
         selectedElements.push(el);
       }
     });
-    
+
     // 如果有选中元素，更新父元素链和当前类型
     if (selectedElements.length > 0) {
       // 使用第一个元素作为参考
       const firstElement = selectedElements[0];
       collectParentChain(firstElement);
-      
+
       // 更新当前元素类型
       const tagName = firstElement.tagName.toLowerCase();
       const className = firstElement.className || '';
       currentElementTypeKey = `${tagName}.${className}`;
     }
-    
+
     // 更新UI
     updateNotification(selectedElements.length);
-    
+
     // 更新剪贴板
     updateClipboard();
-    
+
     // 播放选择声音效果（可选）
     playSelectSound();
   }
-  
+
   // 移除选择框
   cancelBoxSelection();
 }
@@ -421,12 +574,12 @@ function finishBoxSelection() {
 // 取消框选择
 function cancelBoxSelection() {
   isSelecting = false;
-  
+
   // 移除选择框
   if (selectBox && selectBox.parentNode) {
     selectBox.parentNode.removeChild(selectBox);
   }
-  
+
   selectBox = null;
 }
 
@@ -439,16 +592,16 @@ function findElementsInBox(boxRect) {
   const potentialElements = document.querySelectorAll('*');
   const elementsInBox = [];
   const preFilteredElements = []; // 先收集所有满足基本条件的元素
-  
+
   // 第一遍：收集所有框内且有意义的元素
   potentialElements.forEach(el => {
     // 跳过隐藏或无法交互的元素
     if (isElementHiddenOrDisabled(el)) {
       return;
     }
-    
+
     // 跳过扩展自身的UI元素
-    if (el.closest('.batch-selector-ui') || 
+    if (el.closest('.batch-selector-ui') ||
         el.id === 'batch-selector-notification' ||
         el.id === 'batch-selector-info' ||
         el.id === 'batch-selector-prompt' ||
@@ -457,7 +610,7 @@ function findElementsInBox(boxRect) {
         el.classList.contains('batch-selector-ui')) {
       return;
     }
-    
+
     // 获取元素的边界框并调整为绝对位置
     const elRect = el.getBoundingClientRect();
     const adjustedElRect = {
@@ -468,11 +621,11 @@ function findElementsInBox(boxRect) {
       width: elRect.width,
       height: elRect.height
     };
-    
+
     // 检查元素是否在框内
     // 我们考虑元素有一定比例在框内就算选中
     const overlap = getOverlapPercentage(adjustedElRect, boxRect);
-    
+
     if (overlap > 0.5) { // 提高阈值到50%以上的重叠算作选中
       if (isSignificantElement(el)) {
         preFilteredElements.push({
@@ -482,20 +635,20 @@ function findElementsInBox(boxRect) {
       }
     }
   });
-  
+
   // 按深度排序所有预筛选的元素（从浅到深）
   preFilteredElements.sort((a, b) => a.depth - b.depth);
-  
+
   // 创建一个函数来检查两个元素是否存在嵌套关系
   const isNested = (parent, child) => {
     return parent.element.contains(child.element);
   };
-  
+
   // 第二遍：过滤掉嵌套的元素，只保留最浅层级
   for (let i = 0; i < preFilteredElements.length; i++) {
     const current = preFilteredElements[i];
     let isContainedBySelected = false;
-    
+
     // 检查当前元素是否被已选中的更浅层级元素包含
     for (const selected of elementsInBox) {
       if (selected.contains(current.element)) {
@@ -503,13 +656,13 @@ function findElementsInBox(boxRect) {
         break;
       }
     }
-    
+
     // 如果不被任何已选元素包含，才添加
     if (!isContainedBySelected) {
       elementsInBox.push(current.element);
     }
   }
-  
+
   return elementsInBox;
 }
 
@@ -517,28 +670,28 @@ function findElementsInBox(boxRect) {
 function getElementDepth(el) {
   let depth = 0;
   let current = el;
-  
+
   while (current && current !== document.documentElement) {
     depth++;
     current = current.parentElement;
   }
-  
+
   return depth;
 }
 
 // 检查元素是否隐藏或禁用
 function isElementHiddenOrDisabled(el) {
   const style = window.getComputedStyle(el);
-  
+
   // 检查元素是否可见
-  if (style.display === 'none' || 
-      style.visibility === 'hidden' || 
+  if (style.display === 'none' ||
+      style.visibility === 'hidden' ||
       style.opacity === '0' ||
-      el.offsetWidth === 0 || 
+      el.offsetWidth === 0 ||
       el.offsetHeight === 0) {
     return true;
   }
-  
+
   return false;
 }
 
@@ -549,21 +702,21 @@ function getOverlapPercentage(rect1, rect2) {
   const overlapRight = Math.min(rect1.right, rect2.right);
   const overlapTop = Math.max(rect1.top, rect2.top);
   const overlapBottom = Math.min(rect1.bottom, rect2.bottom);
-  
+
   // 如果没有重叠区域，返回0
   if (overlapRight <= overlapLeft || overlapBottom <= overlapTop) {
     return 0;
   }
-  
+
   // 计算重叠面积
   const overlapArea = (overlapRight - overlapLeft) * (overlapBottom - overlapTop);
-  
+
   // 计算元素面积
   const rect1Area = rect1.width * rect1.height;
-  
+
   // 防止除以零
   if (rect1Area === 0) return 0;
-  
+
   // 返回重叠百分比
   return overlapArea / rect1Area;
 }
@@ -574,37 +727,37 @@ function isSignificantElement(el) {
   if (el.offsetWidth < 5 || el.offsetHeight < 5) {
     return false;
   }
-  
+
   // 检查元素是否是文本节点或包含文本内容
   const hasText = el.textContent && el.textContent.trim().length > 0;
-  
+
   // 检查重要标签类型
-  const importantTags = ['a', 'button', 'input', 'select', 'textarea', 'img', 'video', 'audio', 
+  const importantTags = ['a', 'button', 'input', 'select', 'textarea', 'img', 'video', 'audio',
                          'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'td', 'th', 'tr',
                          'label', 'option', 'canvas', 'svg', 'iframe', 'dd', 'dt']; // 添加 dd 和 dt
-  
+
   if (importantTags.includes(el.tagName.toLowerCase())) {
     return true;
   }
-  
+
   // 检查角色属性
-  const importantRoles = ['button', 'link', 'checkbox', 'radio', 'menuitem', 'tab', 'tabpanel', 
+  const importantRoles = ['button', 'link', 'checkbox', 'radio', 'menuitem', 'tab', 'tabpanel',
                           'listitem', 'option', 'heading', 'img', 'banner', 'navigation'];
   if (el.hasAttribute('role') && importantRoles.includes(el.getAttribute('role'))) {
     return true;
   }
-  
+
   // 检查元素是否可点击
-  if (el.hasAttribute('onclick') || 
-      el.hasAttribute('href') || 
+  if (el.hasAttribute('onclick') ||
+      el.hasAttribute('href') ||
       window.getComputedStyle(el).cursor === 'pointer') {
     return true;
   }
-  
+
   // 检查是否有意义的样式特征(如边框、背景色等)
   const style = window.getComputedStyle(el);
-  if (style.border !== 'none' || 
-      style.borderRadius !== '0px' || 
+  if (style.border !== 'none' ||
+      style.borderRadius !== '0px' ||
       style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent') {
     // 检查元素大小，太大的元素可能是容器
     const isReasonableSize = el.offsetWidth < 500 && el.offsetHeight < 500;
@@ -612,12 +765,12 @@ function isSignificantElement(el) {
       return true;
     }
   }
-  
+
   // 如果元素有有意义的文本内容且不是容器元素
   if (hasText && el.children.length === 0) {
     return true;
   }
-  
+
   // 更严格地检查大型容器
   if (el.tagName.toLowerCase() === 'div' || el.tagName.toLowerCase() === 'section') {
     // 如果是容器元素，且太大或包含太多子元素，则认为不重要
@@ -625,17 +778,17 @@ function isSignificantElement(el) {
       return false;
     }
   }
-  
+
   return false;
 }
 
 // 优化选择元素列表，移除嵌套的元素
 function optimizeSelectedElements(elements) {
   if (elements.length <= 1) return elements;
-  
+
   // 优先选择最浅层级的元素
   const optimized = [];
-  
+
   // 将元素按DOM树深度排序
   const elementsWithDepth = elements.map(el => {
     // 计算元素在DOM树中的深度
@@ -647,23 +800,23 @@ function optimizeSelectedElements(elements) {
     }
     return { element: el, depth: depth };
   });
-  
+
   // 按深度排序，浅的在前面
   elementsWithDepth.sort((a, b) => a.depth - b.depth);
-  
+
   // 跟踪已处理的元素
   const processed = new Set();
-  
+
   // 优先考虑最浅层级的元素
   for (const { element } of elementsWithDepth) {
     if (processed.has(element)) continue;
-    
+
     // 标记当前元素为已处理
     processed.add(element);
-    
+
     // 检查这个元素是否覆盖了其他未处理的元素
     let hasNestedElements = false;
-    
+
     for (const { element: otherElement } of elementsWithDepth) {
       if (otherElement !== element && !processed.has(otherElement)) {
         if (element.contains(otherElement)) {
@@ -673,11 +826,11 @@ function optimizeSelectedElements(elements) {
         }
       }
     }
-    
+
     // 添加当前元素到优化列表
     optimized.push(element);
   }
-  
+
   return optimized;
 }
 
@@ -689,25 +842,25 @@ function playSelectSound() {
   // 创建一个音频上下文
   try {
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    
+
     // 创建一个振荡器
     const oscillator = audioContext.createOscillator();
     const gainNode = audioContext.createGain();
-    
+
     // 设置音量
     gainNode.gain.value = 0.1;
-    
+
     // 连接节点
     oscillator.connect(gainNode);
     gainNode.connect(audioContext.destination);
-    
+
     // 设置频率和类型
     oscillator.type = 'sine';
     oscillator.frequency.value = 600;
-    
+
     // 设置衰减
     gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.3);
-    
+
     // 播放音频
     oscillator.start();
     oscillator.stop(audioContext.currentTime + 0.3);
@@ -726,25 +879,25 @@ document.addEventListener('click', function(event) {
   if (!isShiftPressed) {
     return;
   }
-  
-  // console.log("Shift+点击被触发:", event.target.tagName, 
+
+  // console.log("Shift+点击被触发:", event.target.tagName,
   //             "id:", event.target.id,
   //             "class:", event.target.className,
   //             "isUIElement:", event.target.closest('.batch-selector-ui') !== null);
-  
+
   // 检查是否点击了扩展自己的UI元素
-  const isUIElement = event.target.closest('.batch-selector-ui') || 
+  const isUIElement = event.target.closest('.batch-selector-ui') ||
       event.target.id === 'batch-selector-notification' ||
       event.target.id === 'batch-selector-info' ||
       event.target.id === 'batch-selector-prompt' ||
       event.target.id === 'batch-selector-global-msg' ||
       event.target.classList.contains('batch-selector-ui');
-  
+
   // 检查是否是层级选择器
-  const isLevelSelector = event.target.classList.contains('level-selector') || 
+  const isLevelSelector = event.target.classList.contains('level-selector') ||
                           event.target.closest('.level-selector') !== null;
   // console.log("是否UI元素:", isUIElement, "是否层级选择器:", isLevelSelector);
-  
+
   // 如果是UI元素但不是特殊的级别选择器，阻止事件传播但不进行选择
   if (isUIElement && !isLevelSelector) {
     // console.log("UI元素不是层级选择器，阻止传播但允许正常工作");
@@ -752,64 +905,64 @@ document.addEventListener('click', function(event) {
     event.stopPropagation();
     return;
   }
-  
+
   // 如果是级别选择器则由级别选择器自己的点击事件处理，不在这里处理
   if (isLevelSelector) {
     // console.log("是层级选择器，由其自己的处理函数处理");
     return;
   }
-  
+
   // 阻止默认行为和事件传播
   event.preventDefault();
   event.stopPropagation();
   event.stopImmediatePropagation();
-  
+
   // 获取点击的元素
   const clickedElement = event.target;
-  
+
   // 检查是否点击了已选中的元素（Excel风格取消选择）
   if (selectedElements.length > 0) {
     const index = selectedElements.findIndex(el => el === clickedElement);
-    
+
     if (index !== -1) {
       // 已经选中的元素被再次点击，取消选择
       clickedElement.style.outline = '';
       selectedElements.splice(index, 1);
-      
+
       // 更新通知
       updateNotification(selectedElements.length);
-      
+
       // 更新剪贴板
       updateClipboard();
-      
+
       return;
     }
   }
-  
+
   // 高亮显示点击的元素并添加到已选中列表
   clickedElement.style.outline = '2px solid blue';
   selectedElements.push(clickedElement);
-  
+
   // 更新父元素链，记录最新点击元素的层级
   collectParentChain(clickedElement);
-  
+
   // 更新当前选中的元素类型
   const tagName = clickedElement.tagName.toLowerCase();
   const className = clickedElement.className || '';
   currentElementTypeKey = `${tagName}.${className}`;
-  
+
   // 始终显示最新点击的元素信息
   showElementInfo(clickedElement, selectedElements.length);
-  
+
   // 检查是否连续点击了相同类型的元素
   checkConsecutiveSameTypeElements(clickedElement);
-  
+
   // 更新通知
   updateNotification(selectedElements.length);
-  
+
   // 更新剪贴板
   updateClipboard();
-  
+
   return false;
 }, true);
 
@@ -821,16 +974,16 @@ function checkConsecutiveSameTypeElements(element) {
     tagName: element.tagName,
     className: element.className
   };
-  
+
   // 添加到连续元素数组
   consecutiveSameTypeElements.push(elementInfo);
-  
+
   // 如果已经连续点击了2个相同类型的元素，显示批量选择提示
   if (consecutiveSameTypeElements.length >= 2) {
     const lastElement = consecutiveSameTypeElements[consecutiveSameTypeElements.length - 1];
     const secondLastElement = consecutiveSameTypeElements[consecutiveSameTypeElements.length - 2];
-    
-    if (lastElement.tagName === secondLastElement.tagName && 
+
+    if (lastElement.tagName === secondLastElement.tagName &&
         lastElement.className === secondLastElement.className) {
       // 检查是否设置了不再提示
       if (!hideTypePrompt) {
@@ -839,7 +992,7 @@ function checkConsecutiveSameTypeElements(element) {
       }
     }
   }
-  
+
   // 如果连续元素超过5个，移除最旧的
   if (consecutiveSameTypeElements.length > 5) {
     consecutiveSameTypeElements.shift();
@@ -853,7 +1006,7 @@ function checkConsecutiveSameTypeElements(element) {
 function showSelectAllOfTypePrompt(elementInfo) {
   // 查找或创建提示容器
   let promptContainer = document.getElementById('batch-selector-prompt');
-  
+
   if (!promptContainer) {
     promptContainer = document.createElement('div');
     promptContainer.id = 'batch-selector-prompt';
@@ -871,26 +1024,26 @@ function showSelectAllOfTypePrompt(elementInfo) {
     promptContainer.style.fontSize = '14px';
     promptContainer.classList.add('batch-selector-ui');
     promptContainer.setAttribute('class', 'batch-selector-ui');
-    
+
     // 阻止默认点击行为
     promptContainer.addEventListener('mousedown', function(e) {
       if (isShiftPressed) {
         e.stopPropagation();
       }
     }, true);
-    
+
     promptContainer.addEventListener('click', function(e) {
       if (isShiftPressed) {
         e.stopPropagation();
       }
     }, true);
-    
+
     document.body.appendChild(promptContainer);
   }
-  
+
   // 生成对应的选择器
   let selector = elementInfo.tagName.toLowerCase();
-  
+
   // 如果有类名，添加到选择器
   if (elementInfo.className) {
     const classes = elementInfo.className.split(' ');
@@ -900,7 +1053,7 @@ function showSelectAllOfTypePrompt(elementInfo) {
       }
     });
   }
-  
+
   // 获取更友好的元素描述
   let elementDesc = elementInfo.tagName.toLowerCase();
   if (elementInfo.className) {
@@ -909,7 +1062,7 @@ function showSelectAllOfTypePrompt(elementInfo) {
       elementDesc += `.${mainClass}`;
     }
   }
-  
+
   // 显示提示内容 - 优化文本
   promptContainer.innerHTML = `
     <div style="margin-bottom: 8px;">
@@ -934,20 +1087,20 @@ function showSelectAllOfTypePrompt(elementInfo) {
       </label>
     </div>
   `;
-  
+
   // 设置自动消失计时器
   const promptTimeout = setTimeout(() => {
     if (document.body.contains(promptContainer)) {
       document.body.removeChild(promptContainer);
     }
   }, 8000);
-  
+
   // 添加按钮事件
   setTimeout(() => {
     const confirmButton = document.getElementById('select-all-of-type-confirm');
     const cancelButton = document.getElementById('select-all-of-type-cancel');
     const hidePromptCheckbox = document.getElementById('hide-type-prompt');
-    
+
     if (hidePromptCheckbox) {
       hidePromptCheckbox.addEventListener('change', function() {
         hideTypePrompt = this.checked;
@@ -960,12 +1113,12 @@ function showSelectAllOfTypePrompt(elementInfo) {
         }
       });
     }
-    
+
     if (confirmButton) {
       confirmButton.classList.add('batch-selector-ui');
       confirmButton.addEventListener('click', function() {
         clearTimeout(promptTimeout);
-        
+
         // 检查是否选中了"不再提示"
         const hidePromptCheckbox = document.getElementById('hide-type-prompt');
         if (hidePromptCheckbox && hidePromptCheckbox.checked) {
@@ -978,17 +1131,17 @@ function showSelectAllOfTypePrompt(elementInfo) {
             // console.error('无法保存设置:', e);
           }
         }
-        
+
         selectAllOfType(selector);
         document.body.removeChild(promptContainer);
       });
     }
-    
+
     if (cancelButton) {
       cancelButton.classList.add('batch-selector-ui');
       cancelButton.addEventListener('click', function() {
         clearTimeout(promptTimeout);
-        
+
         // 检查是否选中了"不再提示"
         const hidePromptCheckbox = document.getElementById('hide-type-prompt');
         if (hidePromptCheckbox && hidePromptCheckbox.checked) {
@@ -1001,7 +1154,7 @@ function showSelectAllOfTypePrompt(elementInfo) {
             // console.error('无法保存设置:', e);
           }
         }
-        
+
         document.body.removeChild(promptContainer);
       });
     }
@@ -1011,26 +1164,26 @@ function showSelectAllOfTypePrompt(elementInfo) {
 // 选择所有相同类型的元素
 function selectAllOfType(selector) {
   // console.log('执行selectAllOfType，选择器:', selector);
-  
+
   // 如果没有当前选中元素类型，则无法进行精确匹配
   if (!currentElementTypeKey) {
     // console.log('未指定当前元素类型，无法精确匹配');
     return;
   }
-  
+
   // 解析当前元素类型
   const [targetTagName, targetClassName] = currentElementTypeKey.split('.');
   // console.log('目标元素类型:', targetTagName, '目标类名:', targetClassName);
-  
+
   // 清除当前未匹配的元素
   const currentTypeElements = [];
   const otherElements = [];
-  
+
   // 分离当前类型元素和其他元素
   selectedElements.forEach(el => {
     const elTagName = el.tagName.toLowerCase();
     const elClassName = el.className || '';
-    
+
     // 检查是否匹配当前类型
     if (elTagName === targetTagName && elClassName === targetClassName) {
       currentTypeElements.push(el);
@@ -1043,44 +1196,44 @@ function selectAllOfType(selector) {
       }
     }
   });
-  
+
   // 在文档中查找所有具有相同标签的元素
   const allTagElements = document.querySelectorAll(targetTagName);
   // console.log(`找到 ${allTagElements.length} 个标签为 ${targetTagName} 的元素`);
-  
+
   // 已选元素映射，避免重复添加
   const selectedMap = new Map();
   currentTypeElements.forEach(el => selectedMap.set(el, true));
   otherElements.forEach(el => selectedMap.set(el, true)); // 确保所有已选元素都在映射中
-  
+
   // 选择具有完全相同类的元素
   let newSelectedCount = 0;
-  
+
   allTagElements.forEach(el => {
     const elClassName = el.className || '';
-    
+
     // 严格匹配：确保类名完全相同，而不是部分匹配
     if (elClassName === targetClassName) {
       // 如果元素已在当前选择中，跳过
       if (selectedMap.has(el)) {
         return;
       }
-      
+
       // 添加到选中列表并高亮
       el.style.outline = '2px solid blue';
       currentTypeElements.push(el);
       newSelectedCount++;
     }
   });
-  
+
   // 将当前类型元素与其他保留的元素合并
   selectedElements = [...currentTypeElements, ...otherElements];
-  
+
   // console.log(`新增选择了 ${newSelectedCount} 个元素，当前共有 ${selectedElements.length} 个元素被选中`);
-  
+
   // 更新通知
   updateNotification(selectedElements.length);
-  
+
   // 更新剪贴板
   updateClipboard();
 }
@@ -1092,7 +1245,7 @@ function selectAllElements() {
     showTemporaryGlobalMessage('请先选择至少一个元素，F键将选择所有相同类型元素', 3000);
     return;
   }
-  
+
   // 确保有当前选中的元素类型
   if (!currentElementTypeKey) {
     // 使用最后选择的元素设置当前元素类型
@@ -1100,7 +1253,7 @@ function selectAllElements() {
     currentElementTypeKey = `${lastElement.tagName.toLowerCase()}.${lastElement.className || ''}`;
     // console.log('设置当前元素类型为:', currentElementTypeKey);
   }
-  
+
   // 直接调用选择相同类型元素的方法
   selectAllOfType(currentElementTypeKey);
 }
@@ -1112,16 +1265,16 @@ function selectAllElements() {
 function showElementInfo(element, count) {
   // 生成元素信息
   const info = generateSelectorForElement(element);
-  
+
   // 更新全局变量存储当前点击的元素信息
   window.clickedElementInfo = {
     count: count,
     info: info,
     element: element
   };
-  
+
   // console.log('已更新点击元素信息:', window.clickedElementInfo);
-  
+
   // 如果有主UI，直接更新它而不创建新通知
   const mainUI = document.getElementById('batch-selector-notification');
   if (mainUI) {
@@ -1141,20 +1294,20 @@ function showElementInfo(element, count) {
 function collectParentChain(element) {
   parentChain = [];
   let current = element;
-  
+
   while (current && current !== document.body) {
     parentChain.push(current);
     current = current.parentElement;
   }
-  
+
   // 添加body作为最顶层
   if (current === document.body) {
     parentChain.push(current);
   }
-  
+
   // 重置索引
   parentChainIndex = 0;
-  
+
   // 同时收集子元素链
   collectChildrenChain(element);
 }
@@ -1162,12 +1315,12 @@ function collectParentChain(element) {
 // 收集元素的子元素链
 function collectChildrenChain(element) {
   childrenChain = [];
-  
+
   // 添加直接子元素
   let children = Array.from(element.children);
   if (children.length > 0) {
     childrenChain = childrenChain.concat(children);
-    
+
     // 查找特定子元素，如链接
     const linkElements = element.querySelectorAll('a');
     if (linkElements.length > 0) {
@@ -1178,15 +1331,15 @@ function collectChildrenChain(element) {
         }
       });
     }
-    
+
     // 查找有文本内容的子元素
-    const textContainers = Array.from(element.querySelectorAll('*')).filter(el => 
-      el.textContent.trim() && 
-      !childrenChain.includes(el) && 
+    const textContainers = Array.from(element.querySelectorAll('*')).filter(el =>
+      el.textContent.trim() &&
+      !childrenChain.includes(el) &&
       el.children.length === 0 &&
       el.parentNode === element
     );
-    
+
     if (textContainers.length > 0) {
       childrenChain = childrenChain.concat(textContainers);
     }
@@ -1196,44 +1349,44 @@ function collectChildrenChain(element) {
 // 查看元素内部内容
 function viewInside() {
   if (selectedElements.length === 0) return;
-  
+
   // 获取当前选中元素
   let referenceElement = null;
-  
+
   // 如果有特定元素类型被选中，使用该类型的第一个元素
   if (currentElementTypeKey) {
     const [tagName, className] = currentElementTypeKey.split('.');
-    
+
     // 查找第一个匹配的元素
     for (const el of selectedElements) {
-      if (el.tagName.toLowerCase() === tagName && 
+      if (el.tagName.toLowerCase() === tagName &&
           (el.className || '') === className) {
         referenceElement = el;
         break;
       }
     }
   }
-  
+
   // 如果没有找到特定类型的元素，使用第一个选中元素
   if (!referenceElement) {
     referenceElement = selectedElements[0];
   }
-  
+
   // 收集子元素
   collectChildrenChain(referenceElement);
-  
+
   // 如果没有子元素，不进行操作
   if (childrenChain.length === 0) {
     showTemporaryGlobalMessage('该元素没有可选择的子元素', 3000);
     return;
   }
-  
+
   // 每次进入查看内部时，重置层级展开状态为折叠
   isHierarchyExpanded = false;
-  
+
   // 标记正在查看子元素
   isViewingChildren = true;
-  
+
   // 更新通知，显示子元素列表 (调用合并后的函数)
   updateNotification(selectedElements.length); // <--- 修改点
 }
@@ -1247,41 +1400,41 @@ function returnToParentView() {
 // 选择子元素
 function selectChildElement(childIndex) {
   if (childIndex < 0 || childIndex >= childrenChain.length) return;
-  
+
   // 获取选择的子元素
   const childElement = childrenChain[childIndex];
-  
+
   // 检查当前是否有特定元素类型被选中
   if (currentElementTypeKey) {
     // 获取当前类型的所有元素
     const [tagName, className] = currentElementTypeKey.split('.');
     const typeElements = [];
-    
+
     // 找出所有匹配当前类型的元素
     for (let i = 0; i < selectedElements.length; i++) {
       const el = selectedElements[i];
-      if (el.tagName.toLowerCase() === tagName && 
+      if (el.tagName.toLowerCase() === tagName &&
           (el.className || '') === className) {
         typeElements.push(el);
         // 清除原元素的蓝框高亮
         el.style.outline = '';
       }
     }
-    
+
     // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el => 
-      !(el.tagName.toLowerCase() === tagName && 
+    selectedElements = selectedElements.filter(el =>
+      !(el.tagName.toLowerCase() === tagName &&
         (el.className || '') === className)
     );
-    
+
     // 获取子元素的标签和类名
     const childTagName = childElement.tagName.toLowerCase();
     const childClassName = childElement.className || '';
     const newTypeKey = `${childTagName}.${childClassName}`;
-    
+
     // 只在当前选中元素内部查找匹配的子元素，而不是在整个文档中查找
     const matchingChildElements = [];
-    
+
     // 遍历每个当前类型的元素，查找其内部的匹配子元素
     typeElements.forEach(parentEl => {
       // 构建一个选择器，只查找当前父元素内部的匹配子元素
@@ -1294,7 +1447,7 @@ function selectChildElement(childIndex) {
           }
         });
       }
-      
+
       // 在父元素内部查询
       const childrenOfParent = parentEl.querySelectorAll(childSelector);
       childrenOfParent.forEach(child => {
@@ -1303,44 +1456,44 @@ function selectChildElement(childIndex) {
         }
       });
     });
-    
+
     // 添加匹配的子元素到选中列表
     matchingChildElements.forEach(el => {
       el.style.outline = '2px solid blue';
       selectedElements.push(el);
     });
-    
+
     // 更新当前元素类型
     currentElementTypeKey = newTypeKey;
-    
+
     // 更新父元素链
     collectParentChain(childElement);
-    
+
     // 返回到父元素视图
     isViewingChildren = false;
-    
+
     // 更新通知
     updateNotification(selectedElements.length);
-    
+
     // 更新剪贴板
     updateClipboard();
-    
+
     return;
   }
-  
+
   // 如果没有特定元素类型被选中，使用原有逻辑
   // 获取父元素选择器（当前选中的元素）
   const parentSelector = currentSelector;
-  
+
   // 生成子元素的相对选择器
   let childSelector = generateRelativeSelector(childElement);
-  
+
   // 构建组合选择器，选择所有父元素下符合子元素特征的元素
   let newSelector = `${parentSelector} ${childSelector}`;
-  
+
   // 更新选择器并重新选择元素
   updateSelection(newSelector);
-  
+
   // 返回到父元素视图
   isViewingChildren = false;
 }
@@ -1351,12 +1504,12 @@ function selectChildElement(childIndex) {
 // 生成相对于父元素的选择器
 function generateRelativeSelector(element) {
   let selector = element.tagName.toLowerCase();
-  
+
   // 如果是链接元素，尝试生成更通用的选择器
   if (selector === 'a') {
     // 获取标签内的文本
     const text = element.textContent.trim();
-    
+
     // 如果链接有类名，使用类名
     if (element.className) {
       const classes = element.className.split(' ');
@@ -1367,12 +1520,12 @@ function generateRelativeSelector(element) {
       }
       return selector;
     }
-    
+
     // 如果链接有title属性，使用部分title作为选择器
     if (element.title) {
       return `${selector}[title*="${element.title.split('.')[0]}"]`;
     }
-    
+
     // 如果链接文本不空，使用文本内容作为选择器
     if (text) {
       // 如果文本有明显特征（如域名），使用部分文本作为选择器
@@ -1381,17 +1534,17 @@ function generateRelativeSelector(element) {
         const domainPart = domainMatch[1];
         return `${selector}:contains("${domainPart}")`;
       }
-      
+
       // 否则使用整个文本
       return `${selector}:contains("${text}")`;
     }
   }
-  
+
   // 添加ID（如果有）
   if (element.id) {
     return `${selector}#${element.id}`;
   }
-  
+
   // 添加类名（如果有）
   if (element.className) {
     const classes = element.className.split(' ');
@@ -1401,19 +1554,19 @@ function generateRelativeSelector(element) {
       }
     });
   }
-  
+
   return selector;
 }
 
 // 为特定元素生成选择器
 function generateSelectorForSpecificElement(element) {
   let selector = element.tagName.toLowerCase();
-  
+
   // 添加ID（如果有）
   if (element.id) {
     return `${selector}#${element.id}`;
   }
-  
+
   // 添加类名（如果有）
   if (element.className) {
     const classes = element.className.split(' ');
@@ -1423,7 +1576,7 @@ function generateSelectorForSpecificElement(element) {
       }
     });
   }
-  
+
   // 尝试添加其他特性，如链接的href部分特征
   if (selector === 'a' && element.href) {
     // 提取URL中的一部分作为选择器，如域名或路径特征
@@ -1444,7 +1597,7 @@ function generateSelectorForSpecificElement(element) {
       }
     }
   }
-  
+
   return selector;
 }
 
@@ -1457,16 +1610,16 @@ function setupCustomSelectors() {
       const parts = selector.split(':contains(');
       const baseSelector = parts[0];
       const searchText = parts[1].slice(0, -1).replace(/"/g, '');
-      
+
       // 获取基础选择器的元素
       const baseElements = document.querySelectorAll(baseSelector);
-      
+
       // 过滤包含指定文本的元素
-      return Array.from(baseElements).filter(el => 
+      return Array.from(baseElements).filter(el =>
         el.textContent.includes(searchText)
       );
     }
-    
+
     // 如果不包含特殊选择器，使用标准查询
     return document.querySelectorAll(selector);
   };
@@ -1487,14 +1640,14 @@ function updateSelection(newSelector) {
       el.style.outline = '';
     }
   });
-  
+
   // 更新当前选择器
   currentSelector = newSelector;
-  
+
   // 添加到历史
   selectorHistory.push(currentSelector);
   selectorHistoryIndex = selectorHistory.length - 1;
-  
+
   // 检查是否使用自定义选择器
   let newSelectedElements;
   if (newSelector.includes(':contains(')) {
@@ -1504,29 +1657,29 @@ function updateSelection(newSelector) {
     // 使用标准查询方法
     newSelectedElements = document.querySelectorAll(newSelector);
   }
-  
+
   // 重置选中元素
   selectedElements = [];
-  
+
   // 高亮并收集所有相似元素的文本
   newSelectedElements.forEach(el => {
     el.style.outline = '2px solid blue';
     selectedElements.push(el);
   });
-  
+
   // 尝试自动检测是否有单一链接元素
   let hasAutoDetectedLinks = false;
   if (!isViewingChildren && selectedElements.length > 0) {
     // 检查第一个元素是否只有一个链接子元素
     const firstElement = selectedElements[0];
     const linkElements = firstElement.querySelectorAll('a');
-    
+
     if (linkElements.length === 1) {
       const linkSelector = generateSelectorForSpecificElement(linkElements[0]);
-      
+
       // 检查这个选择器是否能在所有选中元素中找到相似结构
       let allHaveSimilarLink = true;
-      
+
       for (let i = 1; i < selectedElements.length; i++) {
         const links = selectedElements[i].querySelectorAll('a');
         if (links.length !== 1) {
@@ -1534,17 +1687,17 @@ function updateSelection(newSelector) {
           break;
         }
       }
-      
+
       if (allHaveSimilarLink) {
         showAutoDetectLink();
         hasAutoDetectedLinks = true;
       }
     }
   }
-  
+
   // 更新剪贴板
   updateClipboard();
-  
+
   // 更新通知 (统一调用 updateNotification)
   updateNotification(newSelectedElements.length); // <--- 修改点 (原先这里有 if/else 判断)
 }
@@ -1553,14 +1706,14 @@ function updateSelection(newSelector) {
 function showAutoDetectLink() {
   const notification = document.getElementById('batch-selector-notification');
   if (!notification) return;
-  
+
   const autoDetectElement = document.createElement('div');
   autoDetectElement.style.marginTop = '10px';
   autoDetectElement.style.padding = '8px';
   autoDetectElement.style.backgroundColor = 'rgba(33, 150, 243, 0.2)';
   autoDetectElement.style.borderRadius = '3px';
   autoDetectElement.style.fontSize = '0.9em';
-  
+
   autoDetectElement.innerHTML = `
     <div style="margin-bottom: 5px;">🔍 检测到内部链接</div>
     <button id="view-inner-links" style="
@@ -1573,9 +1726,9 @@ function showAutoDetectLink() {
       font-size: 0.9em;
     ">查看内部链接</button>
   `;
-  
+
   notification.appendChild(autoDetectElement);
-  
+
   // 添加按钮事件
   setTimeout(() => {
     const viewButton = document.getElementById('view-inner-links');
@@ -1598,17 +1751,17 @@ function updateNotification(count) {
   if (existingNotification) {
     document.body.removeChild(existingNotification);
   }
-  
+
   // 如果没有元素被选中，不显示通知
   if (count === 0) {
     return;
   }
-  
+
   // 创建新通知
   const notification = document.createElement('div');
   notification.id = 'batch-selector-notification';
   notification.className = 'batch-selector-ui';
-  
+
   // 设置通知样式
   if (isUIMinimized) {
     // =============================
@@ -1630,7 +1783,7 @@ function updateNotification(count) {
     notification.style.cursor = 'pointer';
     notification.style.boxShadow = '0 2px 10px rgba(0,0,0,0.3)';
     notification.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-    
+
     notification.innerHTML = `
       <div title="已选择 ${count} 个元素 (点击展开)" style="display: flex; align-items: center; gap: 8px;">
         <div style="font-size: 12px;">已选择元素</div>
@@ -1638,10 +1791,10 @@ function updateNotification(count) {
         <div style="margin-left: 5px; opacity: 0.7; font-size: 12px;">▼</div>
       </div>
     `;
-    
+
     // 添加到文档
     document.body.appendChild(notification);
-    
+
     // === 最小化状态事件监听 ===
     notification.addEventListener('click', function() {
       isUIMinimized = false;
@@ -1654,7 +1807,7 @@ function updateNotification(count) {
       updateNotification(count); // 重新渲染为完整状态
     });
     // 最小化状态下不需要其他监听器
-    
+
   } else {
     // =============================
     // 完整状态 UI 渲染
@@ -1673,7 +1826,7 @@ function updateNotification(count) {
     notification.style.boxShadow = '0 2px 10px rgba(0,0,0,0.3)';
     notification.style.fontFamily = 'system-ui, -apple-system, sans-serif';
     notification.style.fontSize = '14px';
-    
+
     // --- 构建通用部分 ---
     let hierarchyHTML = '';
     if (parentChain.length > 0) {
@@ -1810,7 +1963,10 @@ function updateNotification(count) {
           if (window.clickedElementInfo) {
             selectedTypesHTML += `<div style="font-size: 0.9em; margin-bottom: 8px;">当前元素: <code style="background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 3px; font-size: 0.9em;">${window.clickedElementInfo.info}</code></div>`;
           }
-          selectedTypesHTML += `<div style="margin-bottom: 6px; font-size: 0.9em;">已选元素: <span style="font-weight: bold;">${count}</span></div>`;
+          selectedTypesHTML += `<div style="margin-bottom: 6px; font-size: 0.9em; display: flex; align-items: center; justify-content: space-between;">
+                                  <span>已选元素: <span style="font-weight: bold;">${count}</span></span>
+                                  <button id="batch-selector-copy-btn" class="batch-selector-ui" title="复制选中内容 (Ctrl+C)" style="padding: 2px 8px; background-color: rgba(66, 133, 244, 0.7); border: 1px solid rgba(66, 133, 244, 1); color: white; border-radius: 4px; cursor: pointer; font-size: 0.8em; margin-left: 10px;">复制</button>
+                               </div>`;
           for (const key in elementTypes) {
             const typeInfo = elementTypes[key]; let typeName = typeInfo.tagName;
             if (typeInfo.className) { const displayClassName = typeInfo.className.length > 15 ? typeInfo.className.substring(0, 15) + '...' : typeInfo.className; typeName += `.${displayClassName}`; }
@@ -1824,12 +1980,12 @@ function updateNotification(count) {
         selectedTypesHTML += '</div>';
       }
     }
-    
+
     // 定义"输出格式"区块，包含折叠功能和原内容
     const outputFormatHTML = `
       <div style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
         <div id="output-format-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin-bottom: ${isOutputFormatExpanded ? '6px' : '0'};">
-          <span style="font-size: 0.9em;">输出格式</span>
+          <span style="font-size: 0.9em;">输出设置</span>
           <span class="toggle-arrow" style="font-size: 0.8em;">${isOutputFormatExpanded ? '▼' : '▶'}</span>
             </div>
         <div id="output-format-content" style="display: ${isOutputFormatExpanded ? 'block' : 'none'};">
@@ -1855,10 +2011,15 @@ function updateNotification(count) {
              <div style="font-size: 0.9em; flex-shrink: 0;">去重选项:</div>
              <label style="display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="removeDuplicates" class="batch-selector-ui batch-selector-cleanup-checkbox" ${removeDuplicates ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>去除重复项</span></label>
           </div>
+          <!-- 新增：实时复制选项 -->
+          <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">
+             <div style="font-size: 0.9em; flex-shrink: 0;">实时复制:</div>
+             <label style="display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer;"><input type="checkbox" id="realtimeCopyEnabled" class="batch-selector-ui" ${isRealtimeCopyEnabled ? 'checked' : ''} style="margin:0; transform: scale(0.85);"><span>实时复制到剪贴板</span></label>
+          </div>
       </div>
       </div>
     `;
-    
+
     // 定义"文本搜索"区块，调整收起状态的边距
     const searchHTML = `
       <div style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
@@ -1907,33 +2068,34 @@ function updateNotification(count) {
         </div>
       </div>
     `;
-    
+
       // 移除 guideButtonHTML 的旧定义，因为它是固定的，可以在后面直接使用
       // const guideButtonHTML = ...
-      
+
       // 更新 contentHTML，使用新的 outputFormatHTML 和 searchHTML
       contentHTML = `
       ${selectorInfo}
       ${selectedTypesHTML}
       ${hierarchyHTML}
-      ${searchHTML} 
+      ${searchHTML}
       ${outputFormatHTML}
       `; // 注意这里是反引号 `
 
       // 更新 buttonsHTML，添加分隔符和条件样式
       const hasChildren = childrenChain && childrenChain.length > 0;
-      const insideButtonStyle = hasChildren 
-          ? 'padding: 4px 8px; background-color: #4CAF50; border: 1px solid #66BB6A; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em; box-shadow: 0 0 5px rgba(76, 175, 80, 0.7);' 
+      const insideButtonStyle = hasChildren
+          ? 'padding: 4px 8px; background-color: #4CAF50; border: 1px solid #66BB6A; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em; box-shadow: 0 0 5px rgba(76, 175, 80, 0.7);'
           : 'padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;';
       buttonsHTML = `
       <div style="display: flex; gap: 8px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 10px;">
         <button id="batch-selector-inside" class="batch-selector-ui" style="${insideButtonStyle}">内部元素</button>
         <button id="batch-selector-guide" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">操作指南</button>
+        <button id="batch-selector-key-config-btn" class="batch-selector-ui" style="padding: 4px 8px; background-color: #444; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 0.85em;">快捷键</button>
         <button id="batch-selector-cancel" class="batch-selector-ui" style="padding: 4px 8px; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer; margin-left: auto; font-size: 0.85em;">取消 ✕</button>
       </div>
       `;
     }
-    
+
     // --- 组装完整UI ---
     notification.innerHTML = `
       <div style="position: relative;">
@@ -1942,10 +2104,10 @@ function updateNotification(count) {
       ${buttonsHTML}
       </div>
     `; // 注意这里是反引号 `
-  
+
   // 添加到文档
   document.body.appendChild(notification);
-  
+
     // =============================
     // 统一事件监听器绑定
     // =============================
@@ -1981,7 +2143,7 @@ function updateNotification(count) {
       // --- 添加事件委托处理展开/折叠 ---
       notification.addEventListener('click', function(event) {
         const target = event.target;
-        
+
         // 处理输出格式展开/折叠
         const outputFormatHeader = target.closest('#output-format-header');
         if (outputFormatHeader) {
@@ -1994,7 +2156,7 @@ function updateNotification(count) {
             if(arrow) arrow.textContent = isOutputFormatExpanded ? '▼' : '▶';
           }
         }
-        
+
         // 处理搜索区展开/折叠
         const searchHeader = target.closest('#search-header');
         if (searchHeader) {
@@ -2007,7 +2169,7 @@ function updateNotification(count) {
              if (arrow) arrow.textContent = isSearchExpanded ? '▼' : '▶';
            }
         }
-        
+
         // 处理层级展开/折叠 (如果需要也可以移到这里，但当前逻辑可能没问题)
         const hierarchyToggle = target.closest('#hierarchy-toggle');
          if (hierarchyToggle) {
@@ -2016,7 +2178,7 @@ function updateNotification(count) {
            // console.log(`【层级切换】状态已切换: isHierarchyExpanded = ${isHierarchyExpanded}`);
            updateNotification(selectedElements.length); // 这个仍然需要重新渲染
          }
-         
+
          // 处理最小化按钮
          const minimizeButton = target.closest('#batch-selector-minimize');
          if (minimizeButton) {
@@ -2027,55 +2189,67 @@ function updateNotification(count) {
            if (existingNotification) { document.body.removeChild(existingNotification); }
            updateNotification(selectedElements.length);
          }
-         
+
          // 处理取消按钮
          const cancelButton = target.closest('#batch-selector-cancel');
          if (cancelButton) {
            cancelSelection();
          }
-         
+
          // --- 其他按钮的点击事件处理 ---
          // 注意: 需要根据按钮的 ID 或 class 来区分并执行相应操作
          // 例如: viewInside, returnToParentView, selectChildElement 等原有的独立按钮事件需要移入或调整
-         
+
          // 处理 "内部元素" 按钮
          const insideButton = target.closest('#batch-selector-inside');
          if (insideButton && !isViewingChildren) { // 仅在主界面模式下响应
              viewInside();
          }
-         
+
          // 处理 "操作指南" 按钮
          const guideButton = target.closest('#batch-selector-guide');
          if (guideButton && !isViewingChildren) { // 仅在主界面模式下响应
              showGuide();
          }
-         
+
+         // 处理 "快捷键" 按钮
+         const keyConfigButton = target.closest('#batch-selector-key-config-btn');
+         if (keyConfigButton && !isViewingChildren) { // 仅在主界面模式下响应
+             // 如果配置面板已经显示，则关闭它
+             if (isShowingKeyConfig) {
+                 hideKeyConfigPanel();
+             } else {
+                 // 否则显示配置面板
+                 showKeyConfigPanel();
+             }
+         }
+
          // 处理 "返回" 按钮 (内部查看模式)
          const backButton = target.closest('#batch-selector-back');
          if (backButton && isViewingChildren) { // 仅在内部查看模式下响应
              returnToParentView();
          }
-         
+
          // 处理子元素选择 (内部查看模式)
          const childSelector = target.closest('.child-selector');
          if (childSelector && isViewingChildren) { // 仅在内部查看模式下响应
              const index = parseInt(childSelector.getAttribute('data-index'));
              selectChildElement(index);
          }
-         
+
          // 处理元素类型切换 (主界面模式)
          const typeSelector = target.closest('.element-type-selector');
          if (typeSelector && !isViewingChildren) { // 仅在主界面模式下响应
              const typeKey = typeSelector.getAttribute('data-type');
              switchToElementType(typeKey);
          }
-         
+
          // 处理搜索按钮 (主界面模式)
          const searchButton = target.closest('#batch-selector-search-btn');
          if (searchButton && !isViewingChildren) { // 仅在主界面模式下响应
              executeSearch();
          }
-         
+
          // 处理搜索结果导航 (主界面模式)
          const searchPrevButton = target.closest('#batch-selector-search-prev');
          if (searchPrevButton && !isViewingChildren) { jumpToPreviousSearchResult(); }
@@ -2083,6 +2257,25 @@ function updateNotification(count) {
          if (searchNextButton && !isViewingChildren) { jumpToNextSearchResult(); }
          const searchAddAllButton = target.closest('#batch-selector-search-add-all');
          if (searchAddAllButton && !isViewingChildren) { addAllSearchResultsToSelection(); }
+
+         // 新增：处理复制按钮点击
+         const copyButton = target.closest('#batch-selector-copy-btn');
+         if (copyButton && !isViewingChildren) { // 仅在主界面模式下响应
+            const textToCopy = updateClipboard(); // 获取处理后的文本
+            // 强制写入剪贴板
+            if (textToCopy !== undefined && textToCopy !== null) {
+                 navigator.clipboard.writeText(textToCopy)
+                    .then(() => {
+                        showTemporaryMessage('已复制选中内容到剪贴板');
+                    })
+                    .catch(err => {
+                         showTemporaryMessage('复制到剪贴板失败');
+                         // console.error('复制按钮点击失败:', err);
+                    });
+            } else {
+                showTemporaryMessage('没有内容可复制');
+            }
+         }
 
       });
       // --- 事件委托结束 ---
@@ -2131,9 +2324,9 @@ function updateNotification(count) {
 
       // --- 条件监听器 ---
       // --- 大部分按钮的监听器已移入事件委托 ---
-      
+
       // --- 保留需要直接操作 input/checkbox 的监听器 ---
-      
+
       // 剪贴板格式 Radio 按钮 (需要特殊处理以更新选中状态和样式)
       const formatRadios = notification.querySelectorAll('input[name="clipboardFormat"]');
       formatRadios.forEach(radio => {
@@ -2144,7 +2337,7 @@ function updateNotification(count) {
             clipboardFormat = newlySelectedFormat;
             try { chrome.storage.local.set({'batch-selector-clipboard-format': clipboardFormat}); } catch (e) { /* console.error('无法保存设置:', e); */ }
             updateClipboard(); // 更新剪贴板
-            
+
             // 更新所有 radio 按钮的父标签样式
             formatRadios.forEach(r => {
                 const label = r.closest('label'); // 使用 closest 更安全
@@ -2159,17 +2352,17 @@ function updateNotification(count) {
         if(label){
           label.addEventListener('click', function(e) {
              // 防止 label 的点击事件触发 notification 的委托事件 (如果需要的话)
-             // e.stopPropagation(); 
+             // e.stopPropagation();
           const input = this.querySelector('input');
              if (input && !input.checked) { // 只有当未选中时才手动触发
-                 input.checked = true; 
+                 input.checked = true;
                  // 手动触发 change 事件
-                 input.dispatchEvent(new Event('change', { bubbles: true })); 
+                 input.dispatchEvent(new Event('change', { bubbles: true }));
              }
           });
         }
       });
-      
+
       // 文本清理 Checkbox (保持不变)
       const cleanupCheckboxes = notification.querySelectorAll('.batch-selector-cleanup-checkbox');
       cleanupCheckboxes.forEach(checkbox => {
@@ -2191,14 +2384,14 @@ function updateNotification(count) {
           updateClipboard(); // 更新剪贴板
         });
       });
-      
+
       // 搜索输入框 Enter 键处理 (保持不变)
       const searchInput = notification.querySelector('#batch-selector-search-input');
       if (searchInput && !isViewingChildren) {
           searchInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
-              e.preventDefault(); 
-              if (searchResults.length > 0) { jumpToNextSearchResult(); } 
+              e.preventDefault();
+              if (searchResults.length > 0) { jumpToNextSearchResult(); }
               else { executeSearch(); }
             }
           });
@@ -2235,6 +2428,23 @@ function updateNotification(count) {
       }
       */
 
+      // 新增：实时复制 Checkbox
+      const realtimeCopyCheckbox = notification.querySelector('#realtimeCopyEnabled');
+      if (realtimeCopyCheckbox) {
+        realtimeCopyCheckbox.addEventListener('change', function() {
+          isRealtimeCopyEnabled = this.checked;
+          try {
+            chrome.storage.local.set({'batch-selector-realtime-copy': isRealtimeCopyEnabled});
+          } catch (e) {
+            /* console.error('无法保存实时复制设置:', e); */
+          }
+          // 如果开启了实时复制，立即更新一次剪贴板
+          if (isRealtimeCopyEnabled) {
+            updateClipboard();
+          }
+        });
+      }
+
     }, 0); // End of setTimeout
   } // End of else (完整状态)
 
@@ -2248,33 +2458,33 @@ function updateNotification(count) {
 function switchToElementType(typeKey) {
   // 从选中元素中找到匹配指定类型的第一个元素
   const [tagName, className] = typeKey.split('.');
-  
+
   // 查找第一个匹配的元素
   let targetElement = null;
   for (const el of selectedElements) {
-    if (el.tagName.toLowerCase() === tagName && 
+    if (el.tagName.toLowerCase() === tagName &&
         (el.className || '') === className) {
       targetElement = el;
       break;
     }
   }
-  
+
   if (!targetElement) {
     return; // 未找到匹配元素
   }
-  
+
   // 更新当前选中的元素类型
   currentElementTypeKey = typeKey;
-  
+
   // 重置子元素视图状态，确保可以重新查看内部元素
   isViewingChildren = false;
-  
+
   // 更新父元素链并重置索引
   collectParentChain(targetElement);
-  
+
   // 高亮显示该元素的层级，但不重新选择元素
   updateNotification(selectedElements.length);
-  
+
   // 更新剪贴板
   updateClipboard();
 }
@@ -2287,60 +2497,60 @@ function switchToLevel(index) {
   if (index < 0 || index >= parentChain.length) {
     return;
   }
-  
+
   // 更新当前索引
   parentChainIndex = index;
-  
+
   // 获取当前层级的元素
   const currentElement = parentChain[parentChainIndex];
-  
+
   // 如果当前正在查看某个特定元素类型，仅影响该类型的层级视图
   if (currentElementTypeKey) {
     const [tagName, className] = currentElementTypeKey.split('.');
-    
+
     // 先移除旧的高亮
     selectedElements.forEach(el => {
-      if (el.tagName.toLowerCase() === tagName && 
+      if (el.tagName.toLowerCase() === tagName &&
           (el.className || '') === className) {
         el.style.outline = '';
       }
     });
-    
+
     // 存储当前选中的所有同类型元素
-    const currentTypeElements = selectedElements.filter(el => 
-      el.tagName.toLowerCase() === tagName && 
+    const currentTypeElements = selectedElements.filter(el =>
+      el.tagName.toLowerCase() === tagName &&
       (el.className || '') === className
     );
-    
+
     // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el => 
-      !(el.tagName.toLowerCase() === tagName && 
+    selectedElements = selectedElements.filter(el =>
+      !(el.tagName.toLowerCase() === tagName &&
         (el.className || '') === className)
     );
-    
+
     // 获取目标层级的标签和类名
     const targetTagName = currentElement.tagName.toLowerCase();
     const targetClassName = currentElement.className || '';
-    
+
     // 收集要添加的新元素
     const newElements = [];
-    
+
     // 为每一个当前类型的元素查找对应层级的目标元素
     currentTypeElements.forEach(element => {
       // 收集元素的父元素链
       const elementParentChain = [];
       let current = element;
-      
+
       while (current && current !== document.body) {
         elementParentChain.push(current);
         current = current.parentElement;
       }
-      
+
       // 添加body作为最顶层
       if (current === document.body) {
         elementParentChain.push(current);
       }
-      
+
       // 如果父元素链足够长，找到对应层级的元素
       const targetIndex = elementParentChain.length - 1 - (parentChain.length - 1 - index);
       if (targetIndex >= 0 && targetIndex < elementParentChain.length) {
@@ -2351,18 +2561,18 @@ function switchToLevel(index) {
         }
       }
     });
-    
+
     // 添加新元素到选中列表并高亮
     newElements.forEach(el => {
       el.style.outline = '2px solid blue';
       selectedElements.push(el);
     });
-    
+
     // 如果有新元素，更新当前元素类型
     if (newElements.length > 0) {
       const firstElement = newElements[0];
       currentElementTypeKey = `${firstElement.tagName.toLowerCase()}.${firstElement.className || ''}`;
-      
+
       // 重置子元素链
       collectChildrenChain(firstElement);
     } else {
@@ -2370,20 +2580,20 @@ function switchToLevel(index) {
       currentElement.style.outline = '2px solid blue';
       selectedElements.push(currentElement);
       currentElementTypeKey = `${targetTagName}.${targetClassName}`;
-      
+
       // 重置子元素链
       collectChildrenChain(currentElement);
     }
-    
+
     // 更新通知
     updateNotification(selectedElements.length);
-    
+
     // 更新剪贴板
     updateClipboard();
-    
+
     return;
   }
-  
+
   // 没有特定查看的元素类型时
   // 清除当前选择
   selectedElements.forEach(el => {
@@ -2391,22 +2601,22 @@ function switchToLevel(index) {
       el.style.outline = '';
     }
   });
-  
+
   // 高亮当前层级的元素
   currentElement.style.outline = '2px solid blue';
-  
+
   // 更新选中元素列表，只包含当前元素
   selectedElements = [currentElement];
-  
+
   // 更新当前元素类型
   currentElementTypeKey = `${currentElement.tagName.toLowerCase()}.${currentElement.className || ''}`;
-  
+
   // 更新通知
   updateNotification(selectedElements.length);
-  
+
   // 更新剪贴板
   updateClipboard();
-  
+
   // 重新收集子元素链
   collectChildrenChain(currentElement);
 }
@@ -2417,10 +2627,10 @@ function moveUp() {
     // 已经到达最顶层
     return;
   }
-  
+
   // 移动到上一级
   parentChainIndex++;
-  
+
   // 切换到新层级
   switchToLevel(parentChainIndex);
 }
@@ -2431,10 +2641,10 @@ function moveDown() {
     // 已经到达最底层
     return;
   }
-  
+
   // 移动到下一级
   parentChainIndex--;
-  
+
   // 切换到新层级
   switchToLevel(parentChainIndex);
 }
@@ -2445,12 +2655,12 @@ function moveDown() {
 // 为元素生成选择器
 function generateSelectorForElement(element) {
   let selector = element.tagName.toLowerCase();
-  
+
   // 添加ID（如果有）
   if (element.id) {
     return `${selector}#${element.id}`;
   }
-  
+
   // 添加类名（如果有）
   if (element.className) {
     const classes = element.className.split(' ');
@@ -2460,7 +2670,7 @@ function generateSelectorForElement(element) {
       }
     });
   }
-  
+
   return selector;
 }
 
@@ -2471,7 +2681,7 @@ function generateSelectorForElement(element) {
 function showTemporaryMessage(message) {
   const notification = document.getElementById('batch-selector-notification');
   if (!notification) return;
-  
+
   const messageElement = document.createElement('div');
   messageElement.style.padding = '5px 10px';
   messageElement.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
@@ -2480,9 +2690,9 @@ function showTemporaryMessage(message) {
   messageElement.style.color = '#fff';
   messageElement.style.fontSize = '0.9em';
   messageElement.textContent = message;
-  
+
   notification.appendChild(messageElement);
-  
+
   setTimeout(() => {
     if (notification.contains(messageElement)) {
       notification.removeChild(messageElement);
@@ -2510,33 +2720,33 @@ function showTemporaryGlobalMessage(message, duration) {
   msgElement.textContent = message;
   msgElement.classList.add('batch-selector-ui');
   msgElement.setAttribute('class', 'batch-selector-ui');
-  
+
   // 阻止默认点击行为
   msgElement.addEventListener('mousedown', function(e) {
     if (isShiftPressed) {
       e.stopPropagation();
     }
   }, true);
-  
+
   msgElement.addEventListener('click', function(e) {
     if (isShiftPressed) {
       e.stopPropagation();
     }
   }, true);
-  
+
   // 如果已有消息，先移除
   const existingMsg = document.getElementById('batch-selector-global-msg');
   if (existingMsg) {
     document.body.removeChild(existingMsg);
   }
-  
+
   document.body.appendChild(msgElement);
-  
+
   // 设置淡出动画
   setTimeout(() => {
     msgElement.style.transition = 'opacity 0.5s ease-out';
     msgElement.style.opacity = '0';
-    
+
     setTimeout(() => {
       if (document.body.contains(msgElement)) {
         document.body.removeChild(msgElement);
@@ -2556,7 +2766,7 @@ function resetSelection() {
       el.style.outline = '';
     }
   });
-  
+
  // 重置点击记录
   clickedElements = [];
 }
@@ -2572,7 +2782,7 @@ function cancelSelection() {
       el.style.outlineColor = '';
     }
   });
-  
+
   // 移除所有高亮 - 已选中的元素
   selectedElements.forEach(el => {
     if (el && el.style) {
@@ -2582,7 +2792,7 @@ function cancelSelection() {
       el.style.outlineColor = '';
     }
   });
-  
+
   // 确保移除页面上所有可能被添加了高亮的元素
   // 使用多种选择器尝试匹配所有可能的边框样式
   const selectors = [
@@ -2597,7 +2807,7 @@ function cancelSelection() {
     '[style*="outline-width: 2px"]',
     '[style*="outline-style: solid"]'
   ];
-  
+
   // 对每个选择器进行匹配和清除
   selectors.forEach(selector => {
     try {
@@ -2614,14 +2824,14 @@ function cancelSelection() {
       console.error('清除样式错误:', e);
     }
   });
-  
+
   // 备用方案：遍历所有元素，检查并清除包含red或blue的outline样式
   try {
     const allElements = document.querySelectorAll('*');
     allElements.forEach(el => {
       if (el && el.style && el.style.outline) {
         const outlineStyle = el.style.outline.toLowerCase();
-        if (outlineStyle.includes('red') || outlineStyle.includes('blue') || 
+        if (outlineStyle.includes('red') || outlineStyle.includes('blue') ||
             outlineStyle.includes('solid') || outlineStyle.includes('2px')) {
           el.style.outline = '';
           el.style.outlineWidth = '';
@@ -2633,18 +2843,18 @@ function cancelSelection() {
   } catch (e) {
     console.error('备用清除样式错误:', e);
   }
-  
+
   // 移除通知
   const notification = document.getElementById('batch-selector-notification');
   if (notification) {
     document.body.removeChild(notification);
   }
-  
+
   const infoNotification = document.getElementById('batch-selector-info');
   if (infoNotification) {
     document.body.removeChild(infoNotification);
   }
-  
+
   // 重置所有状态
   clickedElements = [];
   selectedElements = [];
@@ -2673,10 +2883,10 @@ function updateClipboard() {
     navigator.clipboard.writeText('').catch(err => {}); // 清空剪贴板
     return; // 如果没有选中元素，不进行操作
   }
-  
+
   // 在处理前过滤掉所有属于UI自身的元素
-  const elementsToCopy = selectedElements.filter(el => 
-    !el.closest('.batch-selector-ui') && 
+  const elementsToCopy = selectedElements.filter(el =>
+    !el.closest('.batch-selector-ui') &&
     el.id !== 'batch-selector-box' && // 明确排除选择框本身
     el.id !== 'batch-selector-notification' &&
     el.id !== 'batch-selector-info' &&
@@ -2691,24 +2901,24 @@ function updateClipboard() {
       return;
   }
 
-  // --- 新逻辑：使用 textContent 并进行空白符规范化 --- 
+  // --- 新逻辑：使用 textContent 并进行空白符规范化 ---
   let processedTexts = elementsToCopy.map(el => {
       // 1. 获取 textContent，它直接连接文本节点，避免innerText的空格问题
       let text = el.textContent || ''; // 使用 || '' 防止 null 或 undefined
-      
+
       // 2. 全局空白符规范化：将所有连续空白替换为单个空格
       let normalizedText = text.replace(/\s+/g, ' ');
-      
+
       // 3. 应用清理选项
       let cleaned = normalizedText; // 从规范化后的文本开始清理
-          
+
       // 应用其他清理规则...
           if (removeCodePatterns) {
           cleaned = cleaned.replace(/{[^}]*}|\([^)]*\)|<[^>]*>|\[[^]]*\]/g, ' '); // 替换为 空格 以免单词粘连
           }
           if (removeSymbols) {
           // 保留空格，替换符号为空格
-          cleaned = cleaned.replace(/[~`!@#$%^&*()_\-+={}\[\]|\\:;'"<>,.?\/]+/g, ' '); 
+          cleaned = cleaned.replace(/[~`!@#$%^&*()_\-+={}\[\]|\\:;'"<>,.?\/]+/g, ' ');
           }
           if (removeEnglish) {
               cleaned = cleaned.replace(/[a-zA-Z]+/g, ' ');
@@ -2722,28 +2932,28 @@ function updateClipboard() {
       // 应用 "文本空格" 选项，移除所有内部空格
           if (removeInternalSpaces) {
           // 移除所有单空格，实现单词连接
-          cleaned = cleaned.replace(/ /g, ''); 
+          cleaned = cleaned.replace(/ /g, '');
           }
-      
+
       // 清理后可能产生额外的连续空格，再次进行规范化和 trim (可选但推荐)
       cleaned = cleaned.replace(/\s+/g, ' ').trim();
-          
+
           return cleaned;
       });
-      
+
   // 4. 过滤掉清理后为空字符串的项
   processedTexts = processedTexts.filter(text => text.length > 0);
-  // --- 新逻辑结束 --- 
+  // --- 新逻辑结束 ---
 
   // 如果启用了去重选项 (现在对处理后的文本应用)
   if (removeDuplicates) {
     // 使用 Set 来获取唯一项，然后转回数组
     processedTexts = Array.from(new Set(processedTexts));
   }
-  
+
   // 根据设置的格式组合文本 (使用新的 processedTexts)
   let collectedText = '';
-  
+
   switch (clipboardFormat) {
     case 'space':
       collectedText = processedTexts.join(' ');
@@ -2756,13 +2966,15 @@ function updateClipboard() {
       collectedText = processedTexts.join('\n');
       break;
   }
-  
-  // 复制到剪贴板
-  navigator.clipboard.writeText(collectedText)
-    // .then(() => console.log('已更新剪贴板内容'))
-    .catch(err => { /* console.error('更新剪贴板失败: ', err); */ });
-    
-  return collectedText;
+
+  // 仅在启用实时复制时才写入剪贴板
+  if (isRealtimeCopyEnabled) {
+    navigator.clipboard.writeText(collectedText)
+      // .then(() => console.log('已更新剪贴板内容'))
+      .catch(err => { /* console.error('更新剪贴板失败: ', err); */ });
+  }
+
+  return collectedText; // 总是返回处理后的文本
 }
 
 // =============================================
@@ -2773,75 +2985,82 @@ function selectByHierarchy(levelIndex) {
   if (parentChain.length === 0 || levelIndex < 0 || levelIndex >= parentChain.length) {
     return;
   }
-  
+
+  // 检查是否尝试绑定高层级（低索引）到低层级（高索引）
+  if (levelIndex < parentChainIndex) {
+    // 显示无法绑定的提示，但不中断操作
+    showTemporaryMessage('无法绑定高层级到低层级元素');
+    return;
+  }
+
   // 获取当前元素链
   const targetElementChain = parentChain.slice(0, levelIndex + 1);
   // 颠倒顺序，从上到下（从根到叶）
   targetElementChain.reverse();
-  
+
   // 获取当前元素类型
   const currentElement = parentChain[parentChainIndex];
   const currentTagName = currentElement.tagName.toLowerCase();
   const currentClassName = currentElement.className || '';
-  
+
   // 获取目标层级元素
   const targetElement = parentChain[levelIndex];
   const targetTagName = targetElement.tagName.toLowerCase();
   const targetClassName = targetElement.className || '';
-  
+
   // 清除当前元素类型的高亮
   if (currentElementTypeKey) {
     const [tagName, className] = currentElementTypeKey.split('.');
     selectedElements.forEach(el => {
-      if (el.tagName.toLowerCase() === tagName && 
+      if (el.tagName.toLowerCase() === tagName &&
           (el.className || '') === className) {
         el.style.outline = '';
       }
     });
-    
+
     // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el => 
-      !(el.tagName.toLowerCase() === tagName && 
+    selectedElements = selectedElements.filter(el =>
+      !(el.tagName.toLowerCase() === tagName &&
         (el.className || '') === className)
     );
   }
-  
+
   // 寻找页面上所有符合当前元素类型的元素
   const potentialElements = document.querySelectorAll(currentTagName);
   const matchedElements = [];
-  
+
   // 对每个潜在元素检查其层级
   for (const element of potentialElements) {
     // 如果元素类名不匹配，跳过
     if ((element.className || '') !== currentClassName) {
       continue;
     }
-    
+
     // 收集元素的父元素链
     const elementChain = [];
     let current = element;
-    
+
     while (current && current !== document.body) {
       elementChain.unshift(current); // 从上到下添加
       current = current.parentElement;
     }
-    
+
     // 添加body作为最顶层
     if (current === document.body) {
       elementChain.unshift(current);
     }
-    
+
     // 检查是否存在目标层级匹配
     let hasMatchingHierarchy = false;
-    
+
     // 遍历元素链，查找是否有匹配的目标层级
     for (let i = 0; i < elementChain.length; i++) {
       const hierarchyElement = elementChain[i];
-      
-      if (hierarchyElement.tagName.toLowerCase() === targetTagName && 
+
+      if (hierarchyElement.tagName.toLowerCase() === targetTagName &&
           (hierarchyElement.className || '') === targetClassName) {
         // 如果找到匹配的目标层级，检查相对位置关系是否与参考链一致
-        if (i < elementChain.length - 1 && 
+        if (i < elementChain.length - 1 &&
             elementChain[elementChain.length - 1].tagName.toLowerCase() === currentTagName &&
             (elementChain[elementChain.length - 1].className || '') === currentClassName) {
           hasMatchingHierarchy = true;
@@ -2849,31 +3068,31 @@ function selectByHierarchy(levelIndex) {
         }
       }
     }
-    
+
     // 如果找到了匹配的层级关系，添加到结果中
     if (hasMatchingHierarchy) {
       matchedElements.push(element);
     }
   }
-  
+
   // 高亮匹配的元素
   matchedElements.forEach(el => {
     el.style.outline = '2px solid blue';
     selectedElements.push(el);
   });
-  
+
   // 更新当前元素类型
   currentElementTypeKey = `${currentTagName}.${currentClassName}`;
-  
+
   // 存储匹配的层级索引，用于高亮显示
   window.matchedLevelIndex = levelIndex;
-  
+
   // 更新UI
   updateNotification(selectedElements.length);
-  
+
   // 更新剪贴板
   updateClipboard();
-  
+
   // 如果有匹配元素，显示提示
   if (matchedElements.length > 0) {
     // console.log(`已选择 ${matchedElements.length} 个匹配层级"${targetTagName}"的元素`);
@@ -2888,21 +3107,21 @@ function addLevelSelectorsClickEvents(notification) {
   levelSelectors.forEach(selector => {
     // 添加点击事件
     selector.addEventListener('click', function(event) {
-      // console.log("点击层级选择器:", this.getAttribute('data-level'), 
-      //             "类名:", this.className, 
+      // console.log("点击层级选择器:", this.getAttribute('data-level'),
+      //             "类名:", this.className,
       //             "Shift键:", event.shiftKey,
       //             "层级:", this.getAttribute('data-level'),
       //             "是否在查看内部:", isViewingChildren);
-      
-      // 检查是否按住Shift键
+
+      // 检查是否按住Shift键（固定使用Shift键）
       if (event.shiftKey) {
         // 获取点击的层级索引
         const level = parseInt(this.getAttribute('data-level'));
         // console.log("Shift+点击层级:", level, "当前匹配层级:", window.matchedLevelIndex);
-        
+
         // 防止冒泡，避免被UI点击保护逻辑阻止
         event.stopPropagation();
-        
+
         // 在"查看内部"模式下的特殊处理
         if (isViewingChildren) {
           // 如果点击的是已匹配的层级，则取消匹配并保持在"查看内部"模式
@@ -2928,7 +3147,7 @@ function addLevelSelectorsClickEvents(notification) {
         // 正常点击行为，切换到该层级
         const level = parseInt(this.getAttribute('data-level'));
         // console.log("执行普通层级切换, 层级:", level);
-        
+
         // 在"查看内部"模式下，层级操作应该保持在当前页面
         if (isViewingChildren) {
           // 调用内部层级导航函数
@@ -2939,28 +3158,28 @@ function addLevelSelectorsClickEvents(notification) {
         }
       }
     });
-    
+
     // 添加鼠标悬停事件
     selector.addEventListener('mouseover', function() {
       const isCurrentLevel = this.getAttribute('data-current') === 'true';
       const isMatchedLevel = this.getAttribute('data-matched') === 'true';
-      
-      this.style.backgroundColor = isCurrentLevel ? 'rgba(66, 133, 244, 0.9)' : 
-                                  isMatchedLevel ? 'rgba(247, 152, 29, 0.9)' : 
+
+      this.style.backgroundColor = isCurrentLevel ? 'rgba(66, 133, 244, 0.9)' :
+                                  isMatchedLevel ? 'rgba(247, 152, 29, 0.9)' :
                                   'rgba(255, 255, 255, 0.15)';
       this.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
     });
-    
+
     // 添加鼠标离开事件
     selector.addEventListener('mouseout', function() {
       const isCurrentLevel = this.getAttribute('data-current') === 'true';
       const isMatchedLevel = this.getAttribute('data-matched') === 'true';
-      
-      this.style.backgroundColor = isCurrentLevel ? 'rgba(66, 133, 244, 0.8)' : 
-                                  isMatchedLevel ? 'rgba(247, 152, 29, 0.8)' : 
+
+      this.style.backgroundColor = isCurrentLevel ? 'rgba(66, 133, 244, 0.8)' :
+                                  isMatchedLevel ? 'rgba(247, 152, 29, 0.8)' :
                                   'rgba(255, 255, 255, 0.08)';
-      this.style.boxShadow = (isCurrentLevel || isMatchedLevel) ? 
-                           '0 1px 3px rgba(0,0,0,0.3)' : 
+      this.style.boxShadow = (isCurrentLevel || isMatchedLevel) ?
+                           '0 1px 3px rgba(0,0,0,0.3)' :
                            '0 1px 2px rgba(0,0,0,0.1)';
     });
   });
@@ -2972,46 +3191,46 @@ function cancelHierarchyMatch() {
   if (window.matchedLevelIndex === undefined) {
     return;
   }
-  
+
   // 清除当前选择
   if (currentElementTypeKey) {
     const [tagName, className] = currentElementTypeKey.split('.');
-    
+
     // 清除当前元素类型的高亮
     selectedElements.forEach(el => {
-      if (el.tagName.toLowerCase() === tagName && 
+      if (el.tagName.toLowerCase() === tagName &&
           (el.className || '') === className) {
         el.style.outline = '';
       }
     });
-    
+
     // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el => 
-      !(el.tagName.toLowerCase() === tagName && 
+    selectedElements = selectedElements.filter(el =>
+      !(el.tagName.toLowerCase() === tagName &&
         (el.className || '') === className)
     );
-    
+
     // 重新选择所有匹配当前元素类型的元素（不考虑层级）
     const allMatchingElements = document.querySelectorAll(tagName);
-    const filteredElements = Array.from(allMatchingElements).filter(el => 
+    const filteredElements = Array.from(allMatchingElements).filter(el =>
       (el.className || '') === className
     );
-    
+
     // 高亮所有匹配元素
     filteredElements.forEach(el => {
       el.style.outline = '2px solid blue';
       selectedElements.push(el);
     });
-    
+
     // 重置匹配层级索引
     window.matchedLevelIndex = undefined;
-    
+
     // 更新UI
     updateNotification(selectedElements.length);
-    
+
     // 更新剪贴板
     updateClipboard();
-    
+
     // console.log(`已取消层级匹配，当前选择 ${filteredElements.length} 个 ${tagName} 元素`);
   }
 }
@@ -3031,7 +3250,11 @@ function loadUserSettings() {
       'batch-selector-remove-numbers': false,
       'batch-selector-remove-duplicates': false,
       'batch-selector-ui-minimized': false, // Default changed back to expanded
-      'batch-selector-hide-type-prompt': false
+      'batch-selector-hide-type-prompt': false,
+      'batch-selector-realtime-copy': true, // 新增：实时复制设置默认值
+      'batch-selector-select-key-keys': JSON.stringify(['Shift']), // 默认选择键
+      'batch-selector-type-select-key-keys': JSON.stringify(['f']), // 默认类型选择键
+      'batch-selector-copy-key-keys': JSON.stringify(['Control', 'c']) // 默认复制组合键
     };
     // console.log("loadUserSettings: Requesting storage with defaults:", JSON.stringify(defaults)); // Log defaults - REMOVED
 
@@ -3049,6 +3272,19 @@ function loadUserSettings() {
       isUIMinimized = items['batch-selector-ui-minimized'];
       hideTypePrompt = items['batch-selector-hide-type-prompt'];
       isHierarchyExpanded = false; // Always start collapsed
+      isRealtimeCopyEnabled = items['batch-selector-realtime-copy']; // 新增：加载实时复制设置
+
+      // 加载快捷键配置
+      try {
+        selectKeyConfig = { keys: JSON.parse(items['batch-selector-select-key-keys']) };
+        typeSelectKeyConfig = { keys: JSON.parse(items['batch-selector-type-select-key-keys']) };
+        copyKeyConfig = { keys: JSON.parse(items['batch-selector-copy-key-keys']) };
+      } catch (e) {
+        // 如果解析失败，使用默认值
+        selectKeyConfig = { keys: ['Shift'] };
+        typeSelectKeyConfig = { keys: ['f'] };
+        copyKeyConfig = { keys: ['Control', 'c'] };
+      }
 
       // console.log(`loadUserSettings: Globals set - removeSpaces=${removeSpaces}, removeCodePatterns=${removeCodePatterns}, isUIMinimized=${isUIMinimized}`); // Log after setting globals - REMOVED
       // 新的 Log (如果需要)
@@ -3057,6 +3293,824 @@ function loadUserSettings() {
   } catch (e) {
     console.error('loadUserSettings Error:', e);
   }
+}
+
+// 检查快捷键是否冲突
+function checkKeyConflicts() {
+  // 将键数组转换为排序后的字符串，用于比较
+  function keysToString(keyConfig) {
+    return keyConfig.keys.slice().sort().join(',').toLowerCase();
+  }
+
+  const selectKeyStr = keysToString(selectKeyConfig);
+  const typeSelectKeyStr = keysToString(typeSelectKeyConfig);
+  const copyKeyStr = keysToString(copyKeyConfig);
+
+  // 存储冲突信息
+  const conflicts = {
+    select: { hasConflict: false, conflictWith: [] },
+    typeSelect: { hasConflict: false, conflictWith: [] },
+    copy: { hasConflict: false, conflictWith: [] },
+    isEmpty: false
+  };
+
+  // 检查是否有空配置
+  if (selectKeyConfig.keys.length === 0 ||
+      typeSelectKeyConfig.keys.length === 0 ||
+      copyKeyConfig.keys.length === 0) {
+    conflicts.isEmpty = true;
+
+    if (selectKeyConfig.keys.length === 0) {
+      conflicts.select.hasConflict = true;
+      conflicts.select.conflictWith.push('empty');
+    }
+
+    if (typeSelectKeyConfig.keys.length === 0) {
+      conflicts.typeSelect.hasConflict = true;
+      conflicts.typeSelect.conflictWith.push('empty');
+    }
+
+    if (copyKeyConfig.keys.length === 0) {
+      conflicts.copy.hasConflict = true;
+      conflicts.copy.conflictWith.push('empty');
+    }
+  }
+
+  // 检查冲突
+  if (selectKeyStr === typeSelectKeyStr && selectKeyStr !== '') {
+    conflicts.select.hasConflict = true;
+    conflicts.select.conflictWith.push('typeSelect');
+
+    conflicts.typeSelect.hasConflict = true;
+    conflicts.typeSelect.conflictWith.push('select');
+  }
+
+  if (selectKeyStr === copyKeyStr && selectKeyStr !== '') {
+    conflicts.select.hasConflict = true;
+    conflicts.select.conflictWith.push('copy');
+
+    conflicts.copy.hasConflict = true;
+    conflicts.copy.conflictWith.push('select');
+  }
+
+  if (typeSelectKeyStr === copyKeyStr && typeSelectKeyStr !== '') {
+    conflicts.typeSelect.hasConflict = true;
+    conflicts.typeSelect.conflictWith.push('copy');
+
+    conflicts.copy.hasConflict = true;
+    conflicts.copy.conflictWith.push('typeSelect');
+  }
+
+  return conflicts;
+}
+
+// 检查并显示冲突
+function checkAndDisplayConflicts() {
+  const conflicts = checkKeyConflicts();
+
+  // 获取冲突提示元素
+  const selectKeyConflict = document.getElementById('select-key-conflict');
+  const typeSelectKeyConflict = document.getElementById('type-select-key-conflict');
+  const copyKeyConflict = document.getElementById('copy-key-conflict');
+
+  // 获取按键显示元素
+  const selectKeyDisplay = document.getElementById('select-key-display');
+  const typeSelectKeyDisplay = document.getElementById('type-select-key-display');
+  const copyKeyDisplay = document.getElementById('copy-key-display');
+
+  // 显示或隐藏冲突提示
+  if (selectKeyConflict) {
+    // 只在当前输入框下显示文字提示
+    if (conflicts.select.hasConflict && currentCaptureTarget === 'select-key') {
+      selectKeyConflict.style.display = 'block';
+      if (conflicts.select.conflictWith.includes('empty')) {
+        selectKeyConflict.textContent = '⚠️ 快捷键不能为空';
+      } else {
+        selectKeyConflict.textContent = '⚠️ 与其他快捷键冲突';
+      }
+    } else {
+      selectKeyConflict.style.display = 'none';
+    }
+
+    // 设置输入框样式
+    if (selectKeyDisplay) {
+      if (conflicts.select.hasConflict) {
+        if (currentCaptureTarget === 'select-key') {
+          // 当前正在编辑的输入框标红
+          selectKeyDisplay.style.backgroundColor = 'rgba(255, 107, 107, 0.3)';
+        } else {
+          // 其他冲突输入框标黄
+          selectKeyDisplay.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
+        }
+        selectKeyDisplay.style.color = '#fff';
+      } else {
+        // 恢复正常样式，但只有在不是捕获状态时
+        if (!isCapturingKeys || currentCaptureTarget !== 'select-key') {
+          selectKeyDisplay.style.backgroundColor = 'rgba(255,255,255,0.2)';
+          selectKeyDisplay.style.color = '#fff';
+          // 添加过渡效果
+          selectKeyDisplay.style.transition = 'background-color 0.2s ease-in-out';
+        }
+      }
+    }
+  }
+
+  if (typeSelectKeyConflict) {
+    // 只在当前输入框下显示文字提示
+    if (conflicts.typeSelect.hasConflict && currentCaptureTarget === 'type-select-key') {
+      typeSelectKeyConflict.style.display = 'block';
+      if (conflicts.typeSelect.conflictWith.includes('empty')) {
+        typeSelectKeyConflict.textContent = '⚠️ 快捷键不能为空';
+      } else {
+        typeSelectKeyConflict.textContent = '⚠️ 与其他快捷键冲突';
+      }
+    } else {
+      typeSelectKeyConflict.style.display = 'none';
+    }
+
+    // 设置输入框样式
+    if (typeSelectKeyDisplay) {
+      if (conflicts.typeSelect.hasConflict) {
+        if (currentCaptureTarget === 'type-select-key') {
+          // 当前正在编辑的输入框标红
+          typeSelectKeyDisplay.style.backgroundColor = 'rgba(255, 107, 107, 0.3)';
+        } else {
+          // 其他冲突输入框标黄
+          typeSelectKeyDisplay.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
+        }
+        typeSelectKeyDisplay.style.color = '#fff';
+      } else {
+        // 恢复正常样式，但只有在不是捕获状态时
+        if (!isCapturingKeys || currentCaptureTarget !== 'type-select-key') {
+          typeSelectKeyDisplay.style.backgroundColor = 'rgba(255,255,255,0.2)';
+          typeSelectKeyDisplay.style.color = '#fff';
+          // 添加过渡效果
+          typeSelectKeyDisplay.style.transition = 'background-color 0.2s ease-in-out';
+        }
+      }
+    }
+  }
+
+  if (copyKeyConflict) {
+    // 只在当前输入框下显示文字提示
+    if (conflicts.copy.hasConflict && currentCaptureTarget === 'copy-key') {
+      copyKeyConflict.style.display = 'block';
+      if (conflicts.copy.conflictWith.includes('empty')) {
+        copyKeyConflict.textContent = '⚠️ 快捷键不能为空';
+      } else {
+        copyKeyConflict.textContent = '⚠️ 与其他快捷键冲突';
+      }
+    } else {
+      copyKeyConflict.style.display = 'none';
+    }
+
+    // 设置输入框样式
+    if (copyKeyDisplay) {
+      if (conflicts.copy.hasConflict) {
+        if (currentCaptureTarget === 'copy-key') {
+          // 当前正在编辑的输入框标红
+          copyKeyDisplay.style.backgroundColor = 'rgba(255, 107, 107, 0.3)';
+        } else {
+          // 其他冲突输入框标黄
+          copyKeyDisplay.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
+        }
+        copyKeyDisplay.style.color = '#fff';
+      } else {
+        // 恢复正常样式，但只有在不是捕获状态时
+        if (!isCapturingKeys || currentCaptureTarget !== 'copy-key') {
+          copyKeyDisplay.style.backgroundColor = 'rgba(255,255,255,0.2)';
+          copyKeyDisplay.style.color = '#fff';
+          // 添加过渡效果
+          copyKeyDisplay.style.transition = 'background-color 0.2s ease-in-out';
+        }
+      }
+    }
+  }
+
+  return !conflicts.isEmpty &&
+         !conflicts.select.hasConflict &&
+         !conflicts.typeSelect.hasConflict &&
+         !conflicts.copy.hasConflict;
+}
+
+// 保存快捷键配置
+function saveKeyConfig() {
+  try {
+    // 检查快捷键冲突
+    if (!checkAndDisplayConflicts()) {
+      // 不在主UI上显示冲突提示，只在配置面板中显示
+      return false;
+    }
+
+    chrome.storage.local.set({
+      'batch-selector-select-key-keys': JSON.stringify(selectKeyConfig.keys),
+      'batch-selector-type-select-key-keys': JSON.stringify(typeSelectKeyConfig.keys),
+      'batch-selector-copy-key-keys': JSON.stringify(copyKeyConfig.keys)
+    });
+
+    // 显示保存成功的蓝色效果
+    showSaveSuccessEffect();
+
+    // 不在主UI上显示保存提示
+    return true;
+  } catch (e) {
+    console.error('saveKeyConfig Error:', e);
+    return false;
+  }
+}
+
+// 显示保存成功的蓝色效果
+function showSaveSuccessEffect(allDisplays = false) {
+  // 获取当前冲突状态
+  const conflicts = checkKeyConflicts();
+
+  // 获取所有输入框的当前背景色
+  const getOriginalBg = (element) => {
+    // 检查元素是否有冲突
+    let hasConflict = false;
+    const id = element.id;
+
+    if (id === 'select-key-display') {
+      hasConflict = conflicts.select.hasConflict;
+    } else if (id === 'type-select-key-display') {
+      hasConflict = conflicts.typeSelect.hasConflict;
+    } else if (id === 'copy-key-display') {
+      hasConflict = conflicts.copy.hasConflict;
+    }
+
+    // 如果有冲突，返回冲突状态的背景色
+    if (hasConflict) {
+      if (currentCaptureTarget === id.replace('-display', '')) {
+        return 'rgba(255, 107, 107, 0.3)'; // 红色（当前编辑的冲突输入框）
+      } else {
+        return 'rgba(255, 193, 7, 0.3)'; // 黄色（其他冲突输入框）
+      }
+    }
+
+    // 如果没有冲突，返回默认背景色
+    return 'rgba(255,255,255,0.2)';
+  };
+
+  if (allDisplays) {
+    // 如果是恢复默认，显示所有输入框的蓝色效果
+    const displays = [
+      'select-key-display',
+      'type-select-key-display',
+      'copy-key-display'
+    ];
+
+    displays.forEach(id => {
+      const element = document.getElementById(id);
+      if (element) {
+        // 检查是否有冲突
+        let hasConflict = false;
+        if (id === 'select-key-display') {
+          hasConflict = conflicts.select.hasConflict;
+        } else if (id === 'type-select-key-display') {
+          hasConflict = conflicts.typeSelect.hasConflict;
+        } else if (id === 'copy-key-display') {
+          hasConflict = conflicts.copy.hasConflict;
+        }
+
+        // 只对没有冲突的输入框显示蓝色效果
+        if (!hasConflict) {
+          // 保存将要恢复的背景色
+          const returnBg = getOriginalBg(element);
+
+          // 设置蓝色效果，使用淡入淡出效果
+          element.style.transition = 'background-color 0.2s ease-in-out';
+          element.style.backgroundColor = 'rgba(66, 133, 244, 0.3)';
+
+          // 0.5秒后恢复原始背景色，带淡出效果
+          setTimeout(() => {
+            element.style.transition = 'background-color 0.3s ease-in-out';
+            element.style.backgroundColor = returnBg;
+          }, 500);
+        }
+      }
+    });
+
+    return;
+  }
+
+  // 只在刚刚编辑的输入框显示蓝色效果
+  // 获取刚刚编辑的输入框元素
+  let targetDisplay = null;
+
+  // 根据刚刚结束捕获的目标确定要显示效果的输入框
+  // 注意：此时currentCaptureTarget已经被清空，所以我们需要在finishKeyCapture中保存它
+  if (lastCaptureTarget === 'select-key') {
+    targetDisplay = document.getElementById('select-key-display');
+  } else if (lastCaptureTarget === 'type-select-key') {
+    targetDisplay = document.getElementById('type-select-key-display');
+  } else if (lastCaptureTarget === 'copy-key') {
+    targetDisplay = document.getElementById('copy-key-display');
+  }
+
+  // 如果找到目标输入框，且没有冲突，显示蓝色效果
+  if (targetDisplay) {
+    let hasConflict = false;
+
+    // 检查目标输入框是否有冲突
+    if (lastCaptureTarget === 'select-key') {
+      hasConflict = conflicts.select.hasConflict;
+    } else if (lastCaptureTarget === 'type-select-key') {
+      hasConflict = conflicts.typeSelect.hasConflict;
+    } else if (lastCaptureTarget === 'copy-key') {
+      hasConflict = conflicts.copy.hasConflict;
+    }
+
+    // 如果没有冲突，显示蓝色效果
+    if (!hasConflict) {
+      // 保存将要恢复的背景色
+      const returnBg = getOriginalBg(targetDisplay);
+
+      // 设置蓝色效果，使用淡入淡出效果
+      targetDisplay.style.transition = 'background-color 0.2s ease-in-out';
+      targetDisplay.style.backgroundColor = 'rgba(66, 133, 244, 0.3)';
+
+      // 0.5秒后恢复原始背景色，带淡出效果
+      setTimeout(() => {
+        targetDisplay.style.transition = 'background-color 0.3s ease-in-out';
+        targetDisplay.style.backgroundColor = returnBg;
+      }, 500);
+    }
+  }
+}
+
+// 显示快捷键配置面板
+function showKeyConfigPanel() {
+  // 如果已经显示了配置面板，则不重复创建
+  if (isShowingKeyConfig) {
+    return;
+  }
+
+  isShowingKeyConfig = true;
+  isKeyConfigExpanded = true;
+
+  // 创建配置面板
+  const configPanel = document.createElement('div');
+  configPanel.id = 'batch-selector-key-config';
+  configPanel.className = 'batch-selector-ui';
+  configPanel.style.position = 'fixed';
+  configPanel.style.bottom = '20px';
+  configPanel.style.left = '20px';
+  configPanel.style.padding = '12px';
+  configPanel.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
+  configPanel.style.color = 'white';
+  configPanel.style.borderRadius = '5px';
+  configPanel.style.zIndex = '10001';
+  configPanel.style.width = '260px';
+  configPanel.style.boxShadow = '0 2px 10px rgba(0,0,0,0.3)';
+  configPanel.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+  configPanel.style.fontSize = '13px';
+
+  // 配置面板内容
+  configPanel.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <h3 style="margin: 0; font-size: 15px;">快捷键配置</h3>
+      <button id="batch-selector-key-config-close" class="batch-selector-ui" style="background: none; border: none; color: white; cursor: pointer; font-size: 18px; padding: 0 5px;">×</button>
+    </div>
+
+    <div style="margin-bottom: 10px;">
+      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">选择键</div>
+      <div id="select-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
+        <div id="select-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${selectKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
+        <div id="select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">⚠️ 与其他快捷键冲突</div>
+      </div>
+      <div style="font-size: 11px; opacity: 0.7;">用于"选择键+点击/框选"等操作；<br>层级绑定/层级元素切换仍与Shift配合</div>
+    </div>
+
+    <div style="margin-bottom: 10px;">
+      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">选择相同类型键</div>
+      <div id="type-select-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
+        <div id="type-select-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${typeSelectKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
+        <div id="type-select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">⚠️ 与其他快捷键冲突</div>
+      </div>
+      <div style="font-size: 11px; opacity: 0.7;">用于F键选择所有相同类型元素</div>
+    </div>
+
+    <div style="margin-bottom: 10px;">
+      <div style="margin-bottom: 5px; font-weight: bold; font-size: 12px;">复制组合键</div>
+      <div id="copy-key-container" style="background: rgba(255,255,255,0.1); padding: 6px; border-radius: 4px; margin-bottom: 3px;">
+        <div id="copy-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${copyKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
+        <div id="copy-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">⚠️ 与其他快捷键冲突</div>
+      </div>
+      <div style="font-size: 11px; opacity: 0.7;">用于复制所有选中内容</div>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;">
+      <button id="reset-key-defaults" class="batch-selector-ui" style="padding: 4px 8px; background: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">恢复默认</button>
+      <button id="batch-selector-key-config-save" class="batch-selector-ui" style="padding: 4px 8px; background: #4285f4; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">保存</button>
+    </div>
+  `;
+
+  // 添加到文档
+  document.body.appendChild(configPanel);
+
+  // 添加事件监听器
+  setupKeyConfigEvents();
+}
+
+// 设置快捷键配置面板的事件监听器
+function setupKeyConfigEvents() {
+  // 添加点击面板外部关闭的功能
+  document.addEventListener('mousedown', function(event) {
+    if (isShowingKeyConfig && !event.target.closest('#batch-selector-key-config')) {
+      // 如果正在捕获按键，先结束捕获
+      if (isCapturingKeys) {
+        finishKeyCapture();
+      }
+      // 然后关闭面板
+      hideKeyConfigPanel();
+    }
+  });
+
+  // 顶部关闭按钮
+  const closeButton = document.getElementById('batch-selector-key-config-close');
+  if (closeButton) {
+    closeButton.addEventListener('click', function() {
+      // 如果正在捕获按键，先结束捕获
+      if (isCapturingKeys) {
+        finishKeyCapture();
+      }
+      // 然后关闭面板
+      hideKeyConfigPanel();
+    });
+  }
+
+  // 添加点击配置面板空白区域结束捕获的功能
+  const configPanel = document.getElementById('batch-selector-key-config');
+  if (configPanel) {
+    configPanel.addEventListener('mousedown', function(event) {
+      // 如果点击的不是输入框或关闭按钮，且正在捕获按键
+      if (isCapturingKeys &&
+          !event.target.id.includes('-display') &&
+          event.target.id !== 'batch-selector-key-config-close') {
+        // 结束捕获
+        finishKeyCapture();
+      }
+    });
+  }
+
+  // 选择键显示框
+  const selectKeyDisplay = document.getElementById('select-key-display');
+  if (selectKeyDisplay) {
+    selectKeyDisplay.addEventListener('click', function() {
+      if (isCapturingKeys && currentCaptureTarget === 'select-key') {
+        // 如果已经在捕获这个按键，则结束捕获
+        finishKeyCapture();
+      } else if (isCapturingKeys) {
+        // 如果正在捕获其他按键，先结束那个捕获
+        finishKeyCapture();
+        // 然后开始捕获这个按键
+        startKeyCapture('select-key');
+      } else {
+        // 开始捕获按键
+        startKeyCapture('select-key');
+      }
+    });
+
+    // 添加悬停效果
+    selectKeyDisplay.addEventListener('mouseover', function() {
+      // 获取当前冲突状态
+      const conflicts = checkKeyConflicts();
+
+      // 只有在没有冲突且不在捕获状态时才改变背景色
+      if ((!conflicts.select.hasConflict) &&
+          (!isCapturingKeys || currentCaptureTarget !== 'select-key')) {
+        this.style.transition = 'background-color 0.2s ease-in-out';
+        this.style.backgroundColor = 'rgba(255,255,255,0.3)';
+      }
+    });
+
+    selectKeyDisplay.addEventListener('mouseout', function() {
+      // 获取当前冲突状态
+      const conflicts = checkKeyConflicts();
+
+      // 只有在没有冲突且不在捕获状态时才恢复背景色
+      if ((!conflicts.select.hasConflict) &&
+          (!isCapturingKeys || currentCaptureTarget !== 'select-key')) {
+        this.style.transition = 'background-color 0.2s ease-in-out';
+        this.style.backgroundColor = 'rgba(255,255,255,0.2)';
+      }
+    });
+  }
+
+  // 类型选择键显示框
+  const typeSelectKeyDisplay = document.getElementById('type-select-key-display');
+  if (typeSelectKeyDisplay) {
+    typeSelectKeyDisplay.addEventListener('click', function() {
+      if (isCapturingKeys && currentCaptureTarget === 'type-select-key') {
+        // 如果已经在捕获这个按键，则结束捕获
+        finishKeyCapture();
+      } else if (isCapturingKeys) {
+        // 如果正在捕获其他按键，先结束那个捕获
+        finishKeyCapture();
+        // 然后开始捕获这个按键
+        startKeyCapture('type-select-key');
+      } else {
+        // 开始捕获按键
+        startKeyCapture('type-select-key');
+      }
+    });
+
+    // 添加悬停效果
+    typeSelectKeyDisplay.addEventListener('mouseover', function() {
+      // 获取当前冲突状态
+      const conflicts = checkKeyConflicts();
+
+      // 只有在没有冲突且不在捕获状态时才改变背景色
+      if ((!conflicts.typeSelect.hasConflict) &&
+          (!isCapturingKeys || currentCaptureTarget !== 'type-select-key')) {
+        this.style.transition = 'background-color 0.2s ease-in-out';
+        this.style.backgroundColor = 'rgba(255,255,255,0.3)';
+      }
+    });
+
+    typeSelectKeyDisplay.addEventListener('mouseout', function() {
+      // 获取当前冲突状态
+      const conflicts = checkKeyConflicts();
+
+      // 只有在没有冲突且不在捕获状态时才恢复背景色
+      if ((!conflicts.typeSelect.hasConflict) &&
+          (!isCapturingKeys || currentCaptureTarget !== 'type-select-key')) {
+        this.style.transition = 'background-color 0.2s ease-in-out';
+        this.style.backgroundColor = 'rgba(255,255,255,0.2)';
+      }
+    });
+  }
+
+  // 复制键显示框
+  const copyKeyDisplay = document.getElementById('copy-key-display');
+  if (copyKeyDisplay) {
+    copyKeyDisplay.addEventListener('click', function() {
+      if (isCapturingKeys && currentCaptureTarget === 'copy-key') {
+        // 如果已经在捕获这个按键，则结束捕获
+        finishKeyCapture();
+      } else if (isCapturingKeys) {
+        // 如果正在捕获其他按键，先结束那个捕获
+        finishKeyCapture();
+        // 然后开始捕获这个按键
+        startKeyCapture('copy-key');
+      } else {
+        // 开始捕获按键
+        startKeyCapture('copy-key');
+      }
+    });
+
+    // 添加悬停效果
+    copyKeyDisplay.addEventListener('mouseover', function() {
+      // 获取当前冲突状态
+      const conflicts = checkKeyConflicts();
+
+      // 只有在没有冲突且不在捕获状态时才改变背景色
+      if ((!conflicts.copy.hasConflict) &&
+          (!isCapturingKeys || currentCaptureTarget !== 'copy-key')) {
+        this.style.transition = 'background-color 0.2s ease-in-out';
+        this.style.backgroundColor = 'rgba(255,255,255,0.3)';
+      }
+    });
+
+    copyKeyDisplay.addEventListener('mouseout', function() {
+      // 获取当前冲突状态
+      const conflicts = checkKeyConflicts();
+
+      // 只有在没有冲突且不在捕获状态时才恢复背景色
+      if ((!conflicts.copy.hasConflict) &&
+          (!isCapturingKeys || currentCaptureTarget !== 'copy-key')) {
+        this.style.transition = 'background-color 0.2s ease-in-out';
+        this.style.backgroundColor = 'rgba(255,255,255,0.2)';
+      }
+    });
+  }
+
+  // 恢复默认按钮
+  const resetDefaultsButton = document.getElementById('reset-key-defaults');
+  if (resetDefaultsButton) {
+    resetDefaultsButton.addEventListener('click', function() {
+      // 恢复默认配置
+      selectKeyConfig.keys = ['Shift'];
+      typeSelectKeyConfig.keys = ['F'];
+      copyKeyConfig.keys = ['Control', 'C'];
+
+      // 更新显示
+      updateKeyDisplays();
+
+      // 检查冲突（应该没有冲突）
+      checkAndDisplayConflicts();
+
+      // 保存配置
+      saveKeyConfig();
+
+      // 显示所有输入框的成功提示
+      showSaveSuccessEffect(true);
+    });
+
+    // 添加悬停效果
+    resetDefaultsButton.addEventListener('mouseover', function() {
+      this.style.transition = 'background-color 0.2s ease-in-out';
+      this.style.backgroundColor = '#666';
+    });
+
+    resetDefaultsButton.addEventListener('mouseout', function() {
+      this.style.transition = 'background-color 0.2s ease-in-out';
+      this.style.backgroundColor = '#555';
+    });
+  }
+
+  // 保存按钮
+  const saveButton = document.getElementById('batch-selector-key-config-save');
+  if (saveButton) {
+    saveButton.addEventListener('click', function() {
+      // 保存配置
+      if (saveKeyConfig()) {
+        // 如果保存成功，只对最后修改的键显示成功提示
+        // 如果没有最后修改的键，则不显示效果
+        if (lastCaptureTarget) {
+          showSaveSuccessEffect();
+          // 重置lastCaptureTarget，防止重复点击"保存"按钮时仍然显示蓝色效果
+          lastCaptureTarget = '';
+        }
+      }
+    });
+
+    // 添加悬停效果
+    saveButton.addEventListener('mouseover', function() {
+      this.style.transition = 'background-color 0.2s ease-in-out';
+      this.style.backgroundColor = '#5294f7';
+    });
+
+    saveButton.addEventListener('mouseout', function() {
+      this.style.transition = 'background-color 0.2s ease-in-out';
+      this.style.backgroundColor = '#4285f4';
+    });
+  }
+
+  // 初始检查冲突
+  checkAndDisplayConflicts();
+}
+
+// 开始捕获按键
+function startKeyCapture(targetType) {
+  // 更新显示为等待状态
+  const displayElement = document.getElementById(`${targetType}-display`);
+  if (displayElement) {
+    displayElement.textContent = '同时按下组合键...(按Enter结束)';
+    displayElement.style.backgroundColor = 'rgba(255, 193, 7, 0.3)';
+  }
+
+  // 设置捕获状态
+  isCapturingKeys = true;
+  currentCaptureTarget = targetType;
+}
+
+// 处理按键捕获输入
+function handleKeyCaptureInput(event) {
+  // 阻止默认行为
+  event.preventDefault();
+  event.stopPropagation();
+
+  // 如果按下Enter键，结束捕获
+  if (event.key === 'Enter') {
+    finishKeyCapture();
+    return;
+  }
+
+  // 获取当前所有按下的按键
+  const pressedKeys = [];
+
+  // 检查修饰键
+  if (event.ctrlKey) pressedKeys.push('Ctrl');
+  if (event.shiftKey) pressedKeys.push('Shift');
+  if (event.altKey) pressedKeys.push('Alt');
+  if (event.metaKey) pressedKeys.push('Meta');
+
+  // 添加当前按键（如果不是修饰键）
+  let keyName = event.key;
+
+  // 对于特殊键，使用更友好的名称
+  if (keyName === ' ') keyName = 'Space';
+  if (keyName === 'Control') keyName = 'Ctrl';
+  if (keyName === 'Meta') keyName = 'Meta';
+
+  // 格式化按键名称，使单个字符大写
+  if (keyName.length === 1) {
+    keyName = keyName.toUpperCase();
+  }
+
+  // 如果当前按键不是修饰键，或者是唯一按下的修饰键，则添加到列表
+  if (keyName !== 'Ctrl' && keyName !== 'Shift' && keyName !== 'Alt' && keyName !== 'Meta') {
+    pressedKeys.push(keyName);
+  } else if (pressedKeys.length === 0) {
+    // 如果只按下了一个修饰键，也添加到列表
+    pressedKeys.push(keyName);
+  }
+
+  // 获取当前配置
+  let currentConfig;
+  switch (currentCaptureTarget) {
+    case 'select-key':
+      currentConfig = selectKeyConfig;
+      break;
+    case 'type-select-key':
+      currentConfig = typeSelectKeyConfig;
+      break;
+    case 'copy-key':
+      currentConfig = copyKeyConfig;
+      break;
+  }
+
+  // 更新配置为当前按下的按键组合
+  currentConfig.keys = pressedKeys;
+
+  // 更新显示
+  updateKeyDisplays();
+
+  // 实时检查冲突
+  checkAndDisplayConflicts();
+}
+
+// 结束按键捕获
+function finishKeyCapture() {
+  isCapturingKeys = false;
+
+  // 获取当前配置的显示元素
+  const displayElement = document.getElementById(`${currentCaptureTarget}-display`);
+  if (displayElement) {
+    displayElement.style.backgroundColor = 'rgba(255,255,255,0.2)';
+  }
+
+  // 保存当前捕获目标，用于显示保存效果
+  lastCaptureTarget = currentCaptureTarget;
+
+  // 清除当前捕获目标
+  currentCaptureTarget = '';
+
+  // 检查冲突
+  const noConflicts = checkAndDisplayConflicts();
+
+  // 如果没有冲突，自动保存配置
+  if (noConflicts) {
+    saveKeyConfig();
+  }
+  // 冲突只在配置面板中显示，不在主UI上提示
+}
+
+// 格式化按键显示，首字母大写
+function formatKeyForDisplay(key) {
+  if (!key) return '';
+
+  // 特殊键保持原样
+  if (key === 'Ctrl' || key === 'Alt' || key === 'Shift' || key === 'Meta' ||
+      key === 'Space' || key === 'Enter' || key === 'Tab' || key === 'Escape' ||
+      key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight') {
+    return key;
+  }
+
+  // 单个字符的键，转为大写
+  if (key.length === 1) {
+    return key.toUpperCase();
+  }
+
+  // 其他键，首字母大写
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+// 更新按键显示
+function updateKeyDisplays() {
+  const selectKeyDisplay = document.getElementById('select-key-display');
+  const typeSelectKeyDisplay = document.getElementById('type-select-key-display');
+  const copyKeyDisplay = document.getElementById('copy-key-display');
+
+  if (selectKeyDisplay) {
+    const formattedKeys = selectKeyConfig.keys.map(formatKeyForDisplay);
+    selectKeyDisplay.textContent = formattedKeys.join(' + ');
+    selectKeyDisplay.style.backgroundColor = 'rgba(255,255,255,0.2)';
+  }
+
+  if (typeSelectKeyDisplay) {
+    const formattedKeys = typeSelectKeyConfig.keys.map(formatKeyForDisplay);
+    typeSelectKeyDisplay.textContent = formattedKeys.join(' + ');
+    typeSelectKeyDisplay.style.backgroundColor = 'rgba(255,255,255,0.2)';
+  }
+
+  if (copyKeyDisplay) {
+    const formattedKeys = copyKeyConfig.keys.map(formatKeyForDisplay);
+    copyKeyDisplay.textContent = formattedKeys.join(' + ');
+    copyKeyDisplay.style.backgroundColor = 'rgba(255,255,255,0.2)';
+  }
+}
+
+// 隐藏快捷键配置面板
+function hideKeyConfigPanel() {
+  const configPanel = document.getElementById('batch-selector-key-config');
+  if (configPanel) {
+    document.body.removeChild(configPanel);
+  }
+
+  isShowingKeyConfig = false;
+  isKeyConfigExpanded = false;
 }
 
 // 在初始化时加载设置（在文件靠近底部添加调用）
@@ -3089,13 +4143,13 @@ function addExpandLevelsEvents(notification) {
 function showGuide() {
   // 查找或创建操作指南容器
   let guideContainer = document.getElementById('batch-selector-guide-popup');
-  
+
   if (guideContainer) {
     // 如果已存在，则切换显示状态
     guideContainer.style.display = guideContainer.style.display === 'none' ? 'block' : 'none';
     return;
   }
-  
+
   // 创建新的操作指南弹窗
   guideContainer = document.createElement('div');
   guideContainer.id = 'batch-selector-guide-popup';
@@ -3112,7 +4166,12 @@ function showGuide() {
   guideContainer.style.maxWidth = '320px';
   guideContainer.style.fontSize = '13px';
   guideContainer.style.lineHeight = '1.5';
-  
+
+  // 获取格式化的快捷键显示
+  const selectKeyDisplay = selectKeyConfig.keys.map(formatKeyForDisplay).join('+');
+  const typeSelectKeyDisplay = typeSelectKeyConfig.keys.map(formatKeyForDisplay).join('+');
+  const copyKeyDisplay = copyKeyConfig.keys.map(formatKeyForDisplay).join('+');
+
   // 操作指南内容
   guideContainer.innerHTML = `
     <div style="margin-bottom: 8px; font-weight: bold; display: flex; justify-content: space-between; align-items: center;">
@@ -3120,9 +4179,9 @@ function showGuide() {
       <span id="close-guide" style="cursor: pointer; font-size: 16px;">×</span>
     </div>
     <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">
-      <div><b>Shift+点击</b>: 选择/取消选择元素</div>
-      <div><b>Shift+拖拽</b>: 绘制矩形框进行框选</div>
-      <div><b>F键</b>: 选择所有相同类型元素</div>
+      <div><b>${selectKeyDisplay}+点击</b>: 选择/取消选择元素</div>
+      <div><b>${selectKeyDisplay}+拖拽</b>: 绘制矩形框进行框选</div>
+      <div><b>${typeSelectKeyDisplay}</b>: 选择所有相同类型元素</div>
     </div>
     <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">
       <div><b>Shift+↑/↓</b>: 在层级间导航</div>
@@ -3131,7 +4190,7 @@ function showGuide() {
     </div>
     <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">
       <div><b>Esc</b>: 取消选择</div>
-      <div><b>Ctrl+C</b>: 快速复制所选内容</div>
+      <div><b>${copyKeyDisplay}</b>: 快速复制所选内容</div>
     </div>
     <div style="margin-bottom: 6px; font-weight: bold;">文本搜索语法:</div>
     <div style="padding-left: 8px; font-size: 12px; line-height: 1.5; color: #ddd;">
@@ -3141,19 +4200,19 @@ function showGuide() {
       <div><code style="background: rgba(255,255,255,0.1); padding: 0 3px;">"..."</code> - 引号内按字面匹配 (例: <code style="background: rgba(255,255,255,0.1); padding: 0 3px;">"[1,2]"</code>)</div>
     </div>
   `;
-  
+
   document.body.appendChild(guideContainer);
-  
+
   // 添加关闭按钮事件
   document.getElementById('close-guide').addEventListener('click', function() {
     guideContainer.style.display = 'none';
   });
-  
+
   // 点击其他区域关闭指南
   document.addEventListener('click', function(e) {
     if (guideContainer && guideContainer.style.display !== 'none') {
-      if (!guideContainer.contains(e.target) && 
-          e.target.id !== 'batch-selector-guide' && 
+      if (!guideContainer.contains(e.target) &&
+          e.target.id !== 'batch-selector-guide' &&
           !e.target.closest('#batch-selector-guide')) {
         guideContainer.style.display = 'none';
       }
@@ -3180,6 +4239,13 @@ function switchToLevelInside(index) {
 // 新增函数：在查看内部模式下执行层级匹配 (现在调用统一的updateNotification)
 function selectByHierarchyInside(levelIndex) {
   if (levelIndex < 0 || levelIndex >= parentChain.length) {
+    return;
+  }
+
+  // 检查是否尝试绑定高层级（低索引）到低层级（高索引）
+  if (levelIndex < parentChainIndex) {
+    // 显示无法绑定的提示，但不中断操作
+    showTemporaryMessage('无法绑定高层级到低层级元素');
     return;
   }
   // 更新匹配层级索引，用于高亮
@@ -3235,17 +4301,17 @@ function wildcardToRegex(pattern) {
   let processedPattern = '';
   let inQuotes = false;
   let i = 0;
-  
+
   // 检查模式是否完全被引号包围
   const isCompletelyQuoted = pattern.startsWith('"') && pattern.endsWith('"') && pattern.length >= 2;
-  
+
   // 如果模式完全被引号包围，则直接按字面值处理内部内容
   if (isCompletelyQuoted && pattern.length > 2) {
     // 去掉首尾引号，并对特殊字符进行转义
     const innerContent = pattern.substring(1, pattern.length - 1);
     return new RegExp(innerContent.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
   }
-  
+
   while (i < pattern.length) {
     // 处理引号
     if (pattern[i] === '"' && (i === 0 || pattern[i-1] !== '\\')) {
@@ -3254,7 +4320,7 @@ function wildcardToRegex(pattern) {
       i++;
       continue;
     }
-    
+
     if (inQuotes) {
       // 在引号内，将特殊字符转义
       if (pattern[i] === '*' || pattern[i] === '?' || pattern[i] === '[' || pattern[i] === ']') {
@@ -3268,15 +4334,15 @@ function wildcardToRegex(pattern) {
     }
     i++;
   }
-  
+
   // 处理字符集合 [1,2,3,10]
   processedPattern = processedPattern.replace(/\[([^\]]+)\]/g, function(match, contents) {
     // 将逗号分隔的内容转为正则表达式的分组
     const items = contents.split(',').map(item => item.trim());
-    
+
     // 检查是否有多字符项
     const hasMultiCharItems = items.some(item => item.length > 1);
-    
+
     if (hasMultiCharItems) {
       // 使用分组语法 (item1|item2|item3)
       return '(' + items.map(item => {
@@ -3291,16 +4357,16 @@ function wildcardToRegex(pattern) {
       }).join('') + ']';
     }
   });
-  
+
   // 1. 转义正则表达式特殊字符，除了 * 和 ?
   const escapedPattern = processedPattern.replace(/(-|\/|\\|\^|\$|\+|\.|\\|\(|\)|\||\{|\})/g, '\\$1');
-  
+
   // 2. 将非转义的 * 替换为 .*
   const starReplaced = escapedPattern.replace(/(?<!\\)\*/g, '.*');
-  
+
   // 3. 将非转义的 ? 替换为 .
   const finalPattern = starReplaced.replace(/(?<!\\)\?/g, '.');
-  
+
   // 4. 创建正则表达式对象，忽略大小写
   try {
     return new RegExp(finalPattern, 'gi'); // g: 全局匹配, i: 忽略大小写
@@ -3346,7 +4412,7 @@ function executeSearch() {
     return;
   }
 
-  // --- 1. 搜索文本节点 --- 
+  // --- 1. 搜索文本节点 ---
   // console.log("--- 开始搜索文本节点 ---");
   const walker = document.createTreeWalker(
     document.body,
@@ -3360,7 +4426,7 @@ function executeSearch() {
         }
         // 使用正则表达式测试文本内容
         // 需要重置正则表达式的lastIndex，因为同一个 regex 对象会被多次使用
-        searchRegex.lastIndex = 0; 
+        searchRegex.lastIndex = 0;
         if (searchRegex.test(node.nodeValue)) {
           return NodeFilter.FILTER_ACCEPT;
         }
@@ -3399,7 +4465,7 @@ function executeSearch() {
       };
        // console.log(`  [可见文本匹配] 找到: "${textNode.nodeValue.trim().substring(0, 50)}..."`, "节点:", textNode, "父元素:", parentElement);
     }
-    
+
     // 将结果添加到列表
     searchResults.push(result);
   }
@@ -3410,7 +4476,7 @@ function executeSearch() {
   if (searchResults.length > 0) {
     currentSearchResultIndex = 0; // 定位到第一个结果
     // 将正则表达式传递给高亮函数
-    highlightSearchResults(searchRegex); 
+    highlightSearchResults(searchRegex);
     jumpToSearchResult(currentSearchResultIndex, true); // 跳转并滚动到第一个
   } else {
     showTemporaryMessage(`未找到匹配 "${searchTerm}" 的文本`);
@@ -3441,7 +4507,7 @@ function highlightSearchResults(searchRegex) {
       result.highlightSpans = []; // 重置/初始化高亮span数组
       let lastIndex = 0;
       let match;
-      
+
       // 使用 exec 循环查找所有匹配项
       searchRegex.lastIndex = 0; // 确保从头开始搜索
       while ((match = searchRegex.exec(text)) !== null) {
@@ -3449,7 +4515,7 @@ function highlightSearchResults(searchRegex) {
         if (match.index > lastIndex) {
           fragments.push(document.createTextNode(text.substring(lastIndex, match.index)));
         }
-        
+
         // 只有当匹配到非空文本时才创建高亮span
         if (match[0].length > 0) {
           // 创建高亮 span
@@ -3463,9 +4529,9 @@ function highlightSearchResults(searchRegex) {
         fragments.push(highlightSpan);
         result.highlightSpans.push(highlightSpan);
         }
-        
+
         lastIndex = match.index + match[0].length;
-        
+
         // 如果正则表达式可能匹配空字符串，需要手动推进 lastIndex 防止死循环
         if (match[0].length === 0) {
           searchRegex.lastIndex++;
@@ -3478,12 +4544,12 @@ function highlightSearchResults(searchRegex) {
       }
 
       // 如果找到了匹配项，替换原始文本节点
-      if (fragments.length > 0 && result.highlightSpans.length > 0) { 
+      if (fragments.length > 0 && result.highlightSpans.length > 0) {
         // console.log(`  [高亮文本] "${text.trim().substring(0,50)}..."`, textNode);
-        const nextSibling = textNode.nextSibling; 
+        const nextSibling = textNode.nextSibling;
         try {
           // 确保 textNode 仍然是 parent 的子节点
-          if (parent.contains(textNode)) { 
+          if (parent.contains(textNode)) {
           parent.removeChild(textNode);
           } else {
             // console.warn("  文本节点已不在父节点下，跳过移除");
@@ -3491,11 +4557,11 @@ function highlightSearchResults(searchRegex) {
           }
   } catch (e) {
           console.error("  移除原始文本节点失败:", e, textNode);
-          return; 
+          return;
         }
         // 插入新的片段
         fragments.forEach(fragment => {
-          try { 
+          try {
           parent.insertBefore(fragment, nextSibling);
           } catch (e) {
             console.error("  插入高亮片段失败:", e, fragment);
@@ -3504,11 +4570,11 @@ function highlightSearchResults(searchRegex) {
       }
     } else if (result.type === 'hiddenText') {
         // --- 处理隐藏文本匹配的高亮 ---
-      const { visibleAncestor, textNode, parentElement } = result; 
-        
+      const { visibleAncestor, textNode, parentElement } = result;
+
         // 1. 高亮可见祖先 (橙色框)
         if (visibleAncestor && document.body.contains(visibleAncestor)) {
-            visibleAncestor.classList.add('batch-selector-attribute-highlight'); 
+            visibleAncestor.classList.add('batch-selector-attribute-highlight');
             if (index === currentSearchResultIndex) {
               visibleAncestor.classList.add('batch-selector-text-highlight-current');
             }
@@ -3516,7 +4582,7 @@ function highlightSearchResults(searchRegex) {
         } else {
             // console.log(`  跳过祖先高亮: 隐藏文本的可见祖先不存在或已移除`, visibleAncestor);
         }
-        
+
         // 2. 高亮隐藏文本自身 (黄色背景 span)，即使父元素隐藏
       if (parentElement && document.body.contains(textNode) && parentElement.contains(textNode)) { // 检查父元素和文本节点是否存在且有父子关系
             const text = textNode.nodeValue;
@@ -3524,23 +4590,23 @@ function highlightSearchResults(searchRegex) {
             result.highlightSpans = []; // 存储创建的 spans
         let lastIndex = 0;
         let match;
-        
+
         searchRegex.lastIndex = 0; // 重置正则状态
         while ((match = searchRegex.exec(text)) !== null) {
           if (match.index > lastIndex) {
             fragments.push(document.createTextNode(text.substring(lastIndex, match.index)));
           }
-          
+
           // 只有当匹配到非空文本时才创建高亮span
           if (match[0].length > 0) {
               const highlightSpan = document.createElement('span');
-            highlightSpan.className = 'batch-selector-text-highlight'; 
+            highlightSpan.className = 'batch-selector-text-highlight';
             highlightSpan.textContent = match[0];
               // 注意：这里的 current 高亮状态由祖先元素处理，span 本身不需要 current 类
               fragments.push(highlightSpan);
               result.highlightSpans.push(highlightSpan);
           }
-          
+
           lastIndex = match.index + match[0].length;
           if (match[0].length === 0) {
             searchRegex.lastIndex++;
@@ -3552,11 +4618,11 @@ function highlightSearchResults(searchRegex) {
         }
 
         // 如果找到了匹配项，替换原始文本节点
-        if (fragments.length > 0 && result.highlightSpans.length > 0) { 
-              const nextSibling = textNode.nextSibling; 
+        if (fragments.length > 0 && result.highlightSpans.length > 0) {
+              const nextSibling = textNode.nextSibling;
               try {
             // 确保 textNode 仍然是 parent 的子节点
-            if (parentElement.contains(textNode)) { 
+            if (parentElement.contains(textNode)) {
                      parentElement.removeChild(textNode);
                  } else {
               // console.warn("  隐藏文本节点已不在父节点下，跳过移除");
@@ -3564,11 +4630,11 @@ function highlightSearchResults(searchRegex) {
                  }
               } catch (e) {
             console.error("  移除原始隐藏文本节点失败:", e, textNode);
-            return; 
+            return;
           }
           // 插入新的片段
           fragments.forEach(fragment => {
-            try { 
+            try {
               parentElement.insertBefore(fragment, nextSibling);
             } catch (e) {
               console.error("  插入隐藏文本高亮片段失败:", e, fragment);
@@ -3578,7 +4644,7 @@ function highlightSearchResults(searchRegex) {
         }
     }
   });
-  
+
   // console.log("--- 高亮搜索结果完成 ---");
 }
 
@@ -3613,7 +4679,7 @@ function removeSearchHighlight() {
 
   // console.log("已清除文本高亮");
   // 清空之前存储的span引用，以防内存泄漏
-  searchResults.forEach(result => { 
+  searchResults.forEach(result => {
     if(result.type === 'text') { result.highlightSpans = []; }
   });
   // console.log("--- 结束移除搜索高亮 ---");
@@ -3688,7 +4754,7 @@ function jumpToPreviousSearchResult() {
     if (currentSearchResultIndex <= 0) return;
 
     // 移除旧的当前高亮
-    if (currentSearchResultIndex >= 0 && currentSearchResultIndex < searchResults.length) { 
+    if (currentSearchResultIndex >= 0 && currentSearchResultIndex < searchResults.length) {
         const currentResult = searchResults[currentSearchResultIndex];
         if (currentResult.type === 'text') {
             // 检查 highlightSpans 是否存在
@@ -3777,25 +4843,25 @@ function addAllSearchResultsToSelection() {
   // console.log("--- 开始将所有搜索结果添加到选择 ---");
   let addedCount = 0;
   // 使用此 Set 进行最终添加到 selectedElements 的去重
-  const finalElementsToAdd = new Set(); 
+  const finalElementsToAdd = new Set();
 
   searchResults.forEach((result, i) => {
     // console.log(`  处理结果 ${i+1}/${searchResults.length}: 类型=${result.type}`);
     let elementToAdd = null;
     let initialElement = null;
-    
+
     if (result.type === 'text') {
         // --- 文本结果处理 ---
         initialElement = result.parentElement;
     } else if (result.type === 'hiddenText') {
         // --- 隐藏文本结果处理 ---
         // 改为使用直接父元素作为初始候选，而不是可见祖先
-        initialElement = result.parentElement; 
+        initialElement = result.parentElement;
     }
 
     // 优先选择 initialElement，如果它有效
     // 修改：移除对 offsetWidth/offsetHeight 的检查，优先选择直接父元素，即使它隐藏
-    if (initialElement && initialElement !== document.body) { 
+    if (initialElement && initialElement !== document.body) {
         elementToAdd = initialElement;
         // console.log(`    使用 initialElement: <${elementToAdd.tagName}>`, elementToAdd);
     } else {
