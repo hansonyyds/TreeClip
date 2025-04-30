@@ -28,6 +28,8 @@ let selectorHistoryIndex = -1;
 let parentChain = [];
 // 当前在父元素链中的索引
 let parentChainIndex = 0;
+// 存储不同元素类型的匹配层级索引
+let matchedLevelIndices = {};
 // 存储当前元素的子元素链
 let childrenChain = [];
 // 是否正在查看子元素
@@ -63,6 +65,7 @@ let isCapturingKeys = false; // 是否正在捕获按键
 let currentCaptureTarget = ''; // 当前正在捕获按键的目标
 let lastCaptureTarget = ''; // 最后一次捕获按键的目标，用于显示保存效果
 let isCopyKeyPressed = false; // 跟踪复制键是否处于按下状态
+let selectKeyCombinationActive = false; // 跟踪选择键组合是否已经激活
 
 // UI状态：是否最小化
 let isUIMinimized = false; // 默认为展开状态
@@ -122,6 +125,11 @@ function isKeyCombinationPressed(event, keyConfig) {
     return false;
   }
 
+  // 如果是选择键配置，且选择键组合已激活，直接返回true
+  if (keyConfig === selectKeyConfig && selectKeyCombinationActive) {
+    return true;
+  }
+
   // 检查所有键是否都被按下
   // 对于修饰键，我们需要特殊处理
   for (const key of keyConfig.keys) {
@@ -172,11 +180,15 @@ document.addEventListener('keydown', function(event) {
   // 只有在之前未按下的情况下才设置状态
   if (isSelectKeyPressed && !isShiftPressed) {
     isShiftPressed = true;
+    selectKeyCombinationActive = true; // 标记选择键组合已激活
     // 添加临时样式到body，用于鼠标样式
     document.body.classList.add('batch-selector-shift-pressed');
+
+    // 记录当前按下的选择键组合
+    //console.log('选择键组合已激活:', selectKeyConfig.keys.join('+'));
   }
-  // 如果之前按下了但现在没有按下完整组合键，则释放状态
-  else if (!isSelectKeyPressed && isShiftPressed) {
+  // 如果之前按下了但现在没有按下完整组合键，且没有其他键干扰，则释放状态
+  else if (!isSelectKeyPressed && isShiftPressed && !selectKeyCombinationActive) {
     isShiftPressed = false;
     document.body.classList.remove('batch-selector-shift-pressed');
 
@@ -286,6 +298,7 @@ document.addEventListener('keyup', function(event) {
     // 如果释放的是配置中的任何键，或者是修饰键特殊情况
     if (keyInConfig || isCtrlReleased || isShiftReleased || isAltReleased || isMetaReleased) {
       isShiftPressed = false;
+      selectKeyCombinationActive = false; // 重置选择键组合状态
       // 移除临时样式
       document.body.classList.remove('batch-selector-shift-pressed');
 
@@ -295,6 +308,8 @@ document.addEventListener('keyup', function(event) {
       if (isSelecting) {
         cancelBoxSelection();
       }
+
+      //console.log('选择键组合已释放');
     }
   }
 
@@ -383,7 +398,7 @@ document.addEventListener('mousedown', function(event) {
     return;
   }
 
-  if (isShiftPressed) {
+  if (isShiftPressed || selectKeyCombinationActive) {
     // 检查是否点击或其父元素是扩展的UI元素
     if (event.target.closest('.batch-selector-ui') ||
         event.target.id === 'batch-selector-notification' ||
@@ -432,7 +447,7 @@ document.addEventListener('mousemove', function(event) {
     return;
   }
 
-  if (isSelecting && isShiftPressed) {
+  if (isSelecting && (isShiftPressed || selectKeyCombinationActive)) {
     // 更新选择框（考虑页面滚动位置）
     updateBoxSelection(event.clientX + window.pageXOffset, event.clientY + window.pageYOffset);
 
@@ -448,7 +463,7 @@ document.addEventListener('mouseup', function(event) {
     return;
   }
 
-  if (isSelecting && isShiftPressed) {
+  if (isSelecting && (isShiftPressed || selectKeyCombinationActive)) {
     // 完成框选
     finishBoxSelection();
 
@@ -528,15 +543,7 @@ function finishBoxSelection() {
     // 由于框选时isShiftPressed一定为true，所以这里不需要额外检查
     // 如果需要在框选时按住其他键来追加选择，可以在这里添加检查
 
-    // 清除当前选择
-    selectedElements.forEach(el => {
-      if (el && el.style) {
-        el.style.outline = '';
-      }
-    });
-    selectedElements = [];
-
-    // 添加框内元素到选中列表
+    // 添加框内元素到选中列表（累加选择，不清除当前选择）
     elementsInBox.forEach(el => {
       // 如果元素未被选中，添加它
       if (!selectedElements.includes(el)) {
@@ -1063,6 +1070,9 @@ function showSelectAllOfTypePrompt(elementInfo) {
     }
   }
 
+  // 获取当前"选择相同类型键"的格式化显示
+  const typeSelectKeyText = typeSelectKeyConfig.keys.map(formatKeyForDisplay).join('+');
+
   // 显示提示内容 - 优化文本
   promptContainer.innerHTML = `
     <div style="margin-bottom: 8px;">
@@ -1072,7 +1082,7 @@ function showSelectAllOfTypePrompt(elementInfo) {
       是否批量选择所有 <code style="background: rgba(255,255,255,0.2); padding: 2px 4px; border-radius: 3px;">${elementDesc}</code> 元素？
     </div>
     <div style="display: flex; align-items: center; gap: 8px;">
-      <button id="select-all-of-type-confirm" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.3); border: none; color: white; border-radius: 3px; cursor: pointer; flex: 1;">全选 (F)</button>
+      <button id="select-all-of-type-confirm" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.3); border: none; color: white; border-radius: 3px; cursor: pointer; flex: 1;">全选 (${typeSelectKeyText})</button>
       <button id="select-all-of-type-cancel" class="batch-selector-ui" style="padding: 4px 10px; background-color: rgba(255,255,255,0.15); border: none; color: white; border-radius: 3px; cursor: pointer;">取消</button>
       <label style="
         display: flex;
@@ -1240,9 +1250,12 @@ function selectAllOfType(selector) {
 
 // 选择页面上的所有元素
 function selectAllElements() {
+  // 获取当前"选择相同类型键"的格式化显示
+  const typeSelectKeyText = typeSelectKeyConfig.keys.map(formatKeyForDisplay).join('+');
+
   // 如果还没有选过任何元素，提示
   if (selectedElements.length === 0) {
-    showTemporaryGlobalMessage('请先选择至少一个元素，F键将选择所有相同类型元素', 3000);
+    showTemporaryGlobalMessage(`请先选择至少一个元素，${typeSelectKeyText}键将选择所有相同类型元素`, 3000);
     return;
   }
 
@@ -1491,8 +1504,8 @@ function selectChildElement(childIndex) {
   // 构建组合选择器，选择所有父元素下符合子元素特征的元素
   let newSelector = `${parentSelector} ${childSelector}`;
 
-  // 更新选择器并重新选择元素
-  updateSelection(newSelector);
+  // 更新选择器并重新选择元素（不清除当前选择）
+  updateSelection(newSelector, false);
 
   // 返回到父元素视图
   isViewingChildren = false;
@@ -1633,13 +1646,16 @@ setupCustomSelectors();
 // 处理选择器变化和选中元素更新
 // =============================================
 // 更新选择内容
-function updateSelection(newSelector) {
-  // 清除当前选择
-  selectedElements.forEach(el => {
-    if (el && el.style) {
-      el.style.outline = '';
-    }
-  });
+function updateSelection(newSelector, clearCurrent = false) {
+  // 如果需要清除当前选择（默认不清除，保持累加选择）
+  if (clearCurrent) {
+    selectedElements.forEach(el => {
+      if (el && el.style) {
+        el.style.outline = '';
+      }
+    });
+    selectedElements = [];
+  }
 
   // 更新当前选择器
   currentSelector = newSelector;
@@ -1875,7 +1891,7 @@ function updateNotification(count) {
         else if (el.className) { const mainClass = el.className.split(' ')[0]; if (mainClass) { desc += `.${mainClass}`; } }
         const { level, indent } = getAdjustedLevelIndent(j, i, needCollapse, parentChain);
         const isCurrentLevel = i === parentChainIndex;
-        const isMatchedLevel = window.matchedLevelIndex === i;
+        const isMatchedLevel = matchedLevelIndices[currentElementTypeKey] === i;
         hierarchyHTML += `
           <div style="margin-bottom: 3px;">
             <div style="display: flex; align-items: center;">
@@ -3085,7 +3101,8 @@ function selectByHierarchy(levelIndex) {
   currentElementTypeKey = `${currentTagName}.${currentClassName}`;
 
   // 存储匹配的层级索引，用于高亮显示
-  window.matchedLevelIndex = levelIndex;
+  // 使用元素类型关联的匹配层级索引
+  matchedLevelIndices[currentElementTypeKey] = levelIndex;
 
   // 更新UI
   updateNotification(selectedElements.length);
@@ -3125,7 +3142,7 @@ function addLevelSelectorsClickEvents(notification) {
         // 在"查看内部"模式下的特殊处理
         if (isViewingChildren) {
           // 如果点击的是已匹配的层级，则取消匹配并保持在"查看内部"模式
-        if (window.matchedLevelIndex === level) {
+        if (matchedLevelIndices[currentElementTypeKey] === level) {
             // console.log("在查看内部模式下取消层级匹配");
             cancelHierarchyMatchInside();
           } else {
@@ -3135,7 +3152,7 @@ function addLevelSelectorsClickEvents(notification) {
           }
         } else {
           // 正常模式下的层级匹配
-        if (window.matchedLevelIndex === level) {
+        if (matchedLevelIndices[currentElementTypeKey] === level) {
           // console.log("取消层级匹配");
           cancelHierarchyMatch();
         } else {
@@ -3187,8 +3204,8 @@ function addLevelSelectorsClickEvents(notification) {
 
 // 取消层级匹配
 function cancelHierarchyMatch() {
-  // 如果没有匹配的层级，不执行任何操作
-  if (window.matchedLevelIndex === undefined) {
+  // 如果没有当前元素类型的匹配层级，不执行任何操作
+  if (!matchedLevelIndices[currentElementTypeKey]) {
     return;
   }
 
@@ -3222,8 +3239,8 @@ function cancelHierarchyMatch() {
       selectedElements.push(el);
     });
 
-    // 重置匹配层级索引
-    window.matchedLevelIndex = undefined;
+    // 重置当前元素类型的匹配层级索引
+    delete matchedLevelIndices[currentElementTypeKey];
 
     // 更新UI
     updateNotification(selectedElements.length);
@@ -3687,7 +3704,7 @@ function showKeyConfigPanel() {
         <div id="type-select-key-display" style="height: 22px; line-height: 22px; padding: 0 6px; background: rgba(255,255,255,0.2); border-radius: 3px; cursor: pointer; text-align: center;">${typeSelectKeyConfig.keys.map(formatKeyForDisplay).join(' + ')}</div>
         <div id="type-select-key-conflict" style="color: #ff6b6b; font-size: 11px; margin-top: 4px; display: none;">⚠️ 与其他快捷键冲突</div>
       </div>
-      <div style="font-size: 11px; opacity: 0.7;">用于F键选择所有相同类型元素</div>
+      <div style="font-size: 11px; opacity: 0.7;">用于选择所有相同类型元素</div>
     </div>
 
     <div style="margin-bottom: 10px;">
@@ -3699,9 +3716,12 @@ function showKeyConfigPanel() {
       <div style="font-size: 11px; opacity: 0.7;">用于复制所有选中内容</div>
     </div>
 
-    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px;">
-      <button id="reset-key-defaults" class="batch-selector-ui" style="padding: 4px 8px; background: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">恢复默认</button>
-      <button id="batch-selector-key-config-save" class="batch-selector-ui" style="padding: 4px 8px; background: #4285f4; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">保存</button>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+      <span id="save-status-message" style="font-size: 11px; color: #8bc34a; opacity: 0; transition: opacity 0.3s ease-in-out;"></span>
+      <div style="display: flex; gap: 8px;">
+        <button id="reset-key-defaults" class="batch-selector-ui" style="padding: 4px 8px; background: #555; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">恢复默认</button>
+        <button id="batch-selector-key-config-save" class="batch-selector-ui" style="padding: 4px 8px; background: #4285f4; border: none; color: white; border-radius: 3px; cursor: pointer; font-size: 11px;">保存</button>
+      </div>
     </div>
   `;
 
@@ -3889,6 +3909,9 @@ function setupKeyConfigEvents() {
   const resetDefaultsButton = document.getElementById('reset-key-defaults');
   if (resetDefaultsButton) {
     resetDefaultsButton.addEventListener('click', function() {
+      // 获取状态提示元素
+      const statusMessage = document.getElementById('save-status-message');
+
       // 恢复默认配置
       selectKeyConfig.keys = ['Shift'];
       typeSelectKeyConfig.keys = ['F'];
@@ -3905,6 +3928,19 @@ function setupKeyConfigEvents() {
 
       // 显示所有输入框的成功提示
       showSaveSuccessEffect(true);
+
+      // 显示恢复默认提示
+      if (statusMessage) {
+        statusMessage.textContent = '已恢复默认设置';
+        statusMessage.style.opacity = '1';
+        // 3秒后隐藏提示
+        setTimeout(() => {
+          statusMessage.style.opacity = '0';
+        }, 3000);
+      }
+
+      // 重置lastCaptureTarget，防止后续点击"保存"按钮时显示"已保存成功"
+      lastCaptureTarget = '';
     });
 
     // 添加悬停效果
@@ -3923,14 +3959,39 @@ function setupKeyConfigEvents() {
   const saveButton = document.getElementById('batch-selector-key-config-save');
   if (saveButton) {
     saveButton.addEventListener('click', function() {
+      // 获取状态提示元素
+      const statusMessage = document.getElementById('save-status-message');
+
+      // 检查是否有修改
+      const hasChanges = lastCaptureTarget !== '';
+
       // 保存配置
       if (saveKeyConfig()) {
         // 如果保存成功，只对最后修改的键显示成功提示
-        // 如果没有最后修改的键，则不显示效果
-        if (lastCaptureTarget) {
+        if (hasChanges) {
+          // 显示蓝色效果
           showSaveSuccessEffect();
+          // 显示保存成功提示
+          if (statusMessage) {
+            statusMessage.textContent = '已保存成功';
+            statusMessage.style.opacity = '1';
+            // 3秒后隐藏提示
+            setTimeout(() => {
+              statusMessage.style.opacity = '0';
+            }, 3000);
+          }
           // 重置lastCaptureTarget，防止重复点击"保存"按钮时仍然显示蓝色效果
           lastCaptureTarget = '';
+        } else {
+          // 显示无更改提示
+          if (statusMessage) {
+            statusMessage.textContent = '无更改';
+            statusMessage.style.opacity = '1';
+            // 3秒后隐藏提示
+            setTimeout(() => {
+              statusMessage.style.opacity = '0';
+            }, 3000);
+          }
         }
       }
     });
@@ -4249,17 +4310,18 @@ function selectByHierarchyInside(levelIndex) {
     return;
   }
   // 更新匹配层级索引，用于高亮
-  window.matchedLevelIndex = levelIndex;
+  // 使用元素类型关联的匹配层级索引
+  matchedLevelIndices[currentElementTypeKey] = levelIndex;
   // 保持在查看内部模式，刷新界面以显示高亮
   updateNotification(selectedElements.length); // <--- 修改点
 }
 
 // 新增函数：在查看内部模式下取消层级匹配 (现在调用统一的updateNotification)
 function cancelHierarchyMatchInside() {
-  if (window.matchedLevelIndex === undefined) {
+  if (!matchedLevelIndices[currentElementTypeKey]) {
     return;
   }
-  window.matchedLevelIndex = undefined; // 重置匹配层级索引
+  delete matchedLevelIndices[currentElementTypeKey]; // 重置当前元素类型的匹配层级索引
   // 保持在查看内部模式，刷新界面以移除高亮
   updateNotification(selectedElements.length); // <--- 修改点
 }
