@@ -903,11 +903,13 @@ document.addEventListener('click', function(event) {
   // 检查是否是层级选择器
   const isLevelSelector = event.target.classList.contains('level-selector') ||
                           event.target.closest('.level-selector') !== null;
-  // console.log("是否UI元素:", isUIElement, "是否层级选择器:", isLevelSelector);
 
-  // 如果是UI元素但不是特殊的级别选择器，阻止事件传播但不进行选择
-  if (isUIElement && !isLevelSelector) {
-    // console.log("UI元素不是层级选择器，阻止传播但允许正常工作");
+  // 检查是否是元素类型选择器
+  const isTypeSelector = event.target.classList.contains('element-type-selector') ||
+                         event.target.closest('.element-type-selector') !== null;
+
+  // 如果是UI元素但不是特殊的选择器，阻止事件传播但不进行选择
+  if (isUIElement && !isLevelSelector && !isTypeSelector) {
     // 阻止事件传播，但允许UI正常工作
     event.stopPropagation();
     return;
@@ -915,7 +917,25 @@ document.addEventListener('click', function(event) {
 
   // 如果是级别选择器则由级别选择器自己的点击事件处理，不在这里处理
   if (isLevelSelector) {
-    // console.log("是层级选择器，由其自己的处理函数处理");
+    return;
+  }
+
+  // 如果是元素类型选择器则由元素类型选择器自己的点击事件处理，不在这里处理
+  if (isTypeSelector) {
+    // 阻止默认行为
+    event.preventDefault();
+
+    // 获取元素类型选择器
+    const typeSelector = event.target.closest('.element-type-selector');
+    if (typeSelector) {
+      const typeKey = typeSelector.getAttribute('data-type');
+
+      // 检查是否按住Shift键
+      if (event.shiftKey || isShiftPressed) {
+        cancelElementTypeSelection(typeKey);
+      }
+    }
+
     return;
   }
 
@@ -1773,6 +1793,63 @@ function updateNotification(count) {
     return;
   }
 
+  // 检查当前选中元素是否仍然有效（可能已被删除）
+  // 过滤掉已经不在DOM中的元素
+  selectedElements = selectedElements.filter(el => document.body.contains(el));
+
+  // 如果过滤后没有元素了，清空选择并返回
+  if (selectedElements.length === 0) {
+    currentElementTypeKey = '';
+    parentChain = [];
+    parentChainIndex = 0;
+    childrenChain = [];
+    // 清除所有层级匹配索引
+    matchedLevelIndices = {};
+    return;
+  }
+
+  // 如果当前元素类型的元素已经不存在，更新当前元素类型
+  if (currentElementTypeKey) {
+    const [tagName, className] = currentElementTypeKey.split('.');
+    const typeElements = selectedElements.filter(el =>
+      el.tagName.toLowerCase() === tagName &&
+      (el.className || '') === className
+    );
+
+    // 如果当前类型的元素已经不存在，使用第一个选中元素的类型
+    if (typeElements.length === 0) {
+      // 清除当前元素类型的匹配层级索引
+      delete matchedLevelIndices[currentElementTypeKey];
+
+      const firstElement = selectedElements[0];
+      currentElementTypeKey = `${firstElement.tagName.toLowerCase()}.${firstElement.className || ''}`;
+
+      // 更新父元素链
+      collectParentChain(firstElement);
+    } else if (parentChain.length === 0 || !document.body.contains(parentChain[parentChainIndex])) {
+      // 如果父元素链为空或当前层级元素已不在DOM中，使用当前类型的第一个元素更新父元素链
+      collectParentChain(typeElements[0]);
+    }
+
+    // 检查父元素链中的元素是否仍然有效
+    const validParentChain = parentChain.filter(el => document.body.contains(el));
+
+    // 如果父元素链已经变化，更新父元素链
+    if (validParentChain.length !== parentChain.length) {
+      if (typeElements.length > 0) {
+        // 使用当前类型的第一个元素更新父元素链
+        collectParentChain(typeElements[0]);
+      }
+    }
+  } else if (selectedElements.length > 0) {
+    // 如果没有当前元素类型但有选中元素，使用第一个选中元素的类型
+    const firstElement = selectedElements[0];
+    currentElementTypeKey = `${firstElement.tagName.toLowerCase()}.${firstElement.className || ''}`;
+
+    // 更新父元素链
+    collectParentChain(firstElement);
+  }
+
   // 创建新通知
   const notification = document.createElement('div');
   notification.id = 'batch-selector-notification';
@@ -2257,7 +2334,18 @@ function updateNotification(count) {
          const typeSelector = target.closest('.element-type-selector');
          if (typeSelector && !isViewingChildren) { // 仅在主界面模式下响应
              const typeKey = typeSelector.getAttribute('data-type');
-             switchToElementType(typeKey);
+
+             // 检查是否按住Shift键（同时检查原生shift键和自定义选择键）
+             if (event.shiftKey || isShiftPressed) {
+                 // Shift+点击元素类型选择器，取消选择该类型的所有元素
+                 cancelElementTypeSelection(typeKey);
+
+                 // 阻止事件冒泡，确保不会触发其他处理
+                 event.stopPropagation();
+             } else {
+                 // 普通点击，切换到该类型
+                 switchToElementType(typeKey);
+             }
          }
 
          // 处理搜索按钮 (主界面模式)
@@ -2470,6 +2558,61 @@ function updateNotification(count) {
 // =============================================
 // 元素类型切换系统 - 在不同类型的选中元素间切换
 // =============================================
+// 取消选择指定类型的所有元素
+function cancelElementTypeSelection(typeKey) {
+  // 从类型键中提取标签名和类名
+  const [tagName, className] = typeKey.split('.');
+
+  // 找出所有匹配该类型的元素
+  const typeElements = selectedElements.filter(el =>
+    el.tagName.toLowerCase() === tagName &&
+    (el.className || '') === className
+  );
+
+  // 如果没有找到匹配的元素，直接返回
+  if (typeElements.length === 0) {
+    return;
+  }
+
+  // 清除所有匹配元素的高亮
+  typeElements.forEach(el => {
+    el.style.outline = '';
+  });
+
+  // 从选中列表中移除该类型的所有元素
+  selectedElements = selectedElements.filter(el =>
+    !(el.tagName.toLowerCase() === tagName &&
+      (el.className || '') === className)
+  );
+
+  // 如果当前选中的元素类型是被取消的类型，重置当前元素类型
+  if (currentElementTypeKey === typeKey) {
+    // 如果还有其他类型的元素被选中，设置为第一个元素的类型
+    if (selectedElements.length > 0) {
+      const firstElement = selectedElements[0];
+      currentElementTypeKey = `${firstElement.tagName.toLowerCase()}.${firstElement.className || ''}`;
+
+      // 更新父元素链，确保层级UI正确显示
+      collectParentChain(firstElement);
+    } else {
+      // 如果没有其他元素被选中，重置当前元素类型和父元素链
+      currentElementTypeKey = '';
+      parentChain = [];
+      parentChainIndex = 0;
+      childrenChain = [];
+
+      // 清除所有层级匹配索引
+      matchedLevelIndices = {};
+    }
+  }
+
+  // 更新UI
+  updateNotification(selectedElements.length);
+
+  // 更新剪贴板
+  updateClipboard();
+}
+
 // 切换到指定类型的元素并显示其层级
 function switchToElementType(typeKey) {
   // 从选中元素中找到匹配指定类型的第一个元素
@@ -2900,6 +3043,25 @@ function updateClipboard() {
     return; // 如果没有选中元素，不进行操作
   }
 
+  // 检查当前选中元素是否仍然有效（可能已被删除）
+  // 过滤掉已经不在DOM中的元素
+  const validElements = selectedElements.filter(el => document.body.contains(el));
+
+  // 如果有无效元素，更新selectedElements并可能更新UI
+  if (validElements.length !== selectedElements.length) {
+    selectedElements = validElements;
+
+    // 如果过滤后没有元素了，清空选择并返回
+    if (selectedElements.length === 0) {
+      currentElementTypeKey = '';
+      parentChain = [];
+      parentChainIndex = 0;
+      childrenChain = [];
+      navigator.clipboard.writeText('').catch(err => {}); // 清空剪贴板
+      return;
+    }
+  }
+
   // 在处理前过滤掉所有属于UI自身的元素
   const elementsToCopy = selectedElements.filter(el =>
     !el.closest('.batch-selector-ui') &&
@@ -3024,20 +3186,16 @@ function selectByHierarchy(levelIndex) {
   const targetTagName = targetElement.tagName.toLowerCase();
   const targetClassName = targetElement.className || '';
 
-  // 清除当前元素类型的高亮
+  // 保存当前选中的元素，以便后续恢复
+  const currentSelectedElements = [...selectedElements];
+
+  // 获取当前选中的该类型元素
+  let currentTypeElements = [];
   if (currentElementTypeKey) {
     const [tagName, className] = currentElementTypeKey.split('.');
-    selectedElements.forEach(el => {
-      if (el.tagName.toLowerCase() === tagName &&
-          (el.className || '') === className) {
-        el.style.outline = '';
-      }
-    });
-
-    // 从选中列表中移除当前类型的元素
-    selectedElements = selectedElements.filter(el =>
-      !(el.tagName.toLowerCase() === tagName &&
-        (el.className || '') === className)
+    currentTypeElements = selectedElements.filter(el =>
+      el.tagName.toLowerCase() === tagName &&
+      (el.className || '') === className
     );
   }
 
@@ -3091,11 +3249,43 @@ function selectByHierarchy(levelIndex) {
     }
   }
 
-  // 高亮匹配的元素
-  matchedElements.forEach(el => {
-    el.style.outline = '2px solid blue';
-    selectedElements.push(el);
-  });
+  // 检查是否是当前层级
+  const isCurrentLevel = levelIndex === parentChainIndex;
+
+  // 只有在不是当前层级时，才清除当前元素类型的高亮
+  if (currentElementTypeKey && !isCurrentLevel) {
+    const [tagName, className] = currentElementTypeKey.split('.');
+    selectedElements.forEach(el => {
+      if (el.tagName.toLowerCase() === tagName &&
+          (el.className || '') === className) {
+        el.style.outline = '';
+      }
+    });
+
+    // 从选中列表中移除当前类型的元素
+    selectedElements = selectedElements.filter(el =>
+      !(el.tagName.toLowerCase() === tagName &&
+        (el.className || '') === className)
+    );
+  }
+
+  // 如果是当前层级，只添加新的匹配元素
+  if (isCurrentLevel) {
+    // 检查这些元素是否已经在选中列表中
+    const newElements = matchedElements.filter(el => !selectedElements.includes(el));
+
+    // 高亮新的匹配元素并添加到选中列表
+    newElements.forEach(el => {
+      el.style.outline = '2px solid blue';
+      selectedElements.push(el);
+    });
+  } else {
+    // 不是当前层级，添加所有匹配元素
+    matchedElements.forEach(el => {
+      el.style.outline = '2px solid blue';
+      selectedElements.push(el);
+    });
+  }
 
   // 更新当前元素类型
   currentElementTypeKey = `${currentTagName}.${currentClassName}`;
@@ -3109,13 +3299,6 @@ function selectByHierarchy(levelIndex) {
 
   // 更新剪贴板
   updateClipboard();
-
-  // 如果有匹配元素，显示提示
-  if (matchedElements.length > 0) {
-    // console.log(`已选择 ${matchedElements.length} 个匹配层级"${targetTagName}"的元素`);
-  } else {
-    // console.log('未找到符合该层级的匹配元素');
-  }
 }
 
 // 添加层级选择器的点击事件
@@ -3124,17 +3307,11 @@ function addLevelSelectorsClickEvents(notification) {
   levelSelectors.forEach(selector => {
     // 添加点击事件
     selector.addEventListener('click', function(event) {
-      // console.log("点击层级选择器:", this.getAttribute('data-level'),
-      //             "类名:", this.className,
-      //             "Shift键:", event.shiftKey,
-      //             "层级:", this.getAttribute('data-level'),
-      //             "是否在查看内部:", isViewingChildren);
 
       // 检查是否按住Shift键（固定使用Shift键）
       if (event.shiftKey) {
         // 获取点击的层级索引
         const level = parseInt(this.getAttribute('data-level'));
-        // console.log("Shift+点击层级:", level, "当前匹配层级:", window.matchedLevelIndex);
 
         // 防止冒泡，避免被UI点击保护逻辑阻止
         event.stopPropagation();
@@ -3209,16 +3386,40 @@ function cancelHierarchyMatch() {
     return;
   }
 
-  // 清除当前选择
+  // 检查当前选中元素是否仍然有效（可能已被删除）
+  // 过滤掉已经不在DOM中的元素
+  selectedElements = selectedElements.filter(el => document.body.contains(el));
+
+  // 如果过滤后没有元素了，清空选择并返回
+  if (selectedElements.length === 0) {
+    currentElementTypeKey = '';
+    parentChain = [];
+    parentChainIndex = 0;
+    childrenChain = [];
+    delete matchedLevelIndices[currentElementTypeKey];
+    return;
+  }
+
+  // 获取当前匹配的层级
+  const matchedLevel = matchedLevelIndices[currentElementTypeKey];
+
+  // 重置当前元素类型的匹配层级索引
+  delete matchedLevelIndices[currentElementTypeKey];
+
+  // 如果当前元素类型存在
   if (currentElementTypeKey) {
     const [tagName, className] = currentElementTypeKey.split('.');
 
-    // 清除当前元素类型的高亮
-    selectedElements.forEach(el => {
-      if (el.tagName.toLowerCase() === tagName &&
-          (el.className || '') === className) {
-        el.style.outline = '';
-      }
+    // 获取当前选中的该类型元素
+    const currentTypeElements = selectedElements.filter(el =>
+      el.tagName.toLowerCase() === tagName &&
+      (el.className || '') === className
+    );
+
+    // 无论是否有选中的元素，都重新选择所有匹配当前元素类型的元素（不考虑层级）
+    // 清除当前类型元素的高亮
+    currentTypeElements.forEach(el => {
+      el.style.outline = '';
     });
 
     // 从选中列表中移除当前类型的元素
@@ -3227,7 +3428,7 @@ function cancelHierarchyMatch() {
         (el.className || '') === className)
     );
 
-    // 重新选择所有匹配当前元素类型的元素（不考虑层级）
+    // 重新选择所有匹配当前元素类型的元素
     const allMatchingElements = document.querySelectorAll(tagName);
     const filteredElements = Array.from(allMatchingElements).filter(el =>
       (el.className || '') === className
@@ -3239,16 +3440,11 @@ function cancelHierarchyMatch() {
       selectedElements.push(el);
     });
 
-    // 重置当前元素类型的匹配层级索引
-    delete matchedLevelIndices[currentElementTypeKey];
-
     // 更新UI
     updateNotification(selectedElements.length);
 
     // 更新剪贴板
     updateClipboard();
-
-    // console.log(`已取消层级匹配，当前选择 ${filteredElements.length} 个 ${tagName} 元素`);
   }
 }
 // =============================================
@@ -4243,6 +4439,7 @@ function showGuide() {
       <div><b>${selectKeyDisplay}+点击</b>: 选择/取消选择元素</div>
       <div><b>${selectKeyDisplay}+拖拽</b>: 绘制矩形框进行框选</div>
       <div><b>${typeSelectKeyDisplay}</b>: 选择所有相同类型元素</div>
+      <div><b>Shift+点击类型标签</b>: 取消选择整个类型的元素</div>
     </div>
     <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2);">
       <div><b>Shift+↑/↓</b>: 在层级间导航</div>
@@ -4309,21 +4506,203 @@ function selectByHierarchyInside(levelIndex) {
     showTemporaryMessage('无法绑定高层级到低层级元素');
     return;
   }
+
+  // 获取当前元素类型
+  const currentElement = parentChain[parentChainIndex];
+  const currentTagName = currentElement.tagName.toLowerCase();
+  const currentClassName = currentElement.className || '';
+
+  // 获取目标层级元素
+  const targetElement = parentChain[levelIndex];
+  const targetTagName = targetElement.tagName.toLowerCase();
+  const targetClassName = targetElement.className || '';
+
+  // 保存当前选中的元素，以便后续恢复
+  const currentSelectedElements = [...selectedElements];
+
+  // 获取当前选中的该类型元素
+  let currentTypeElements = [];
+  if (currentElementTypeKey) {
+    const [tagName, className] = currentElementTypeKey.split('.');
+    currentTypeElements = selectedElements.filter(el =>
+      el.tagName.toLowerCase() === tagName &&
+      (el.className || '') === className
+    );
+  }
+
+  // 寻找页面上所有符合当前元素类型的元素
+  const potentialElements = document.querySelectorAll(currentTagName);
+  const matchedElements = [];
+
+  // 对每个潜在元素检查其层级
+  for (const element of potentialElements) {
+    // 如果元素类名不匹配，跳过
+    if ((element.className || '') !== currentClassName) {
+      continue;
+    }
+
+    // 收集元素的父元素链
+    const elementChain = [];
+    let current = element;
+
+    while (current && current !== document.body) {
+      elementChain.unshift(current); // 从上到下添加
+      current = current.parentElement;
+    }
+
+    // 添加body作为最顶层
+    if (current === document.body) {
+      elementChain.unshift(current);
+    }
+
+    // 检查是否存在目标层级匹配
+    let hasMatchingHierarchy = false;
+
+    // 遍历元素链，查找是否有匹配的目标层级
+    for (let i = 0; i < elementChain.length; i++) {
+      const hierarchyElement = elementChain[i];
+
+      if (hierarchyElement.tagName.toLowerCase() === targetTagName &&
+          (hierarchyElement.className || '') === targetClassName) {
+        // 如果找到匹配的目标层级，检查相对位置关系是否与参考链一致
+        if (i < elementChain.length - 1 &&
+            elementChain[elementChain.length - 1].tagName.toLowerCase() === currentTagName &&
+            (elementChain[elementChain.length - 1].className || '') === currentClassName) {
+          hasMatchingHierarchy = true;
+          break;
+        }
+      }
+    }
+
+    // 如果找到了匹配的层级关系，添加到结果中
+    if (hasMatchingHierarchy) {
+      matchedElements.push(element);
+    }
+  }
+
+  // 检查是否是当前层级
+  const isCurrentLevel = levelIndex === parentChainIndex;
+
+  // 只有在不是当前层级时，才清除当前元素类型的高亮
+  if (currentElementTypeKey && !isCurrentLevel) {
+    const [tagName, className] = currentElementTypeKey.split('.');
+    selectedElements.forEach(el => {
+      if (el.tagName.toLowerCase() === tagName &&
+          (el.className || '') === className) {
+        el.style.outline = '';
+      }
+    });
+
+    // 从选中列表中移除当前类型的元素
+    selectedElements = selectedElements.filter(el =>
+      !(el.tagName.toLowerCase() === tagName &&
+        (el.className || '') === className)
+    );
+  }
+
+  // 如果是当前层级，只添加新的匹配元素
+  if (isCurrentLevel) {
+    // 检查这些元素是否已经在选中列表中
+    const newElements = matchedElements.filter(el => !selectedElements.includes(el));
+
+    // 高亮新的匹配元素并添加到选中列表
+    newElements.forEach(el => {
+      el.style.outline = '2px solid blue';
+      selectedElements.push(el);
+    });
+  } else {
+    // 不是当前层级，添加所有匹配元素
+    matchedElements.forEach(el => {
+      el.style.outline = '2px solid blue';
+      selectedElements.push(el);
+    });
+  }
+
+  // 更新当前元素类型
+  currentElementTypeKey = `${currentTagName}.${currentClassName}`;
+
   // 更新匹配层级索引，用于高亮
   // 使用元素类型关联的匹配层级索引
   matchedLevelIndices[currentElementTypeKey] = levelIndex;
+
   // 保持在查看内部模式，刷新界面以显示高亮
-  updateNotification(selectedElements.length); // <--- 修改点
+  updateNotification(selectedElements.length);
+
+  // 更新剪贴板
+  updateClipboard();
 }
 
 // 新增函数：在查看内部模式下取消层级匹配 (现在调用统一的updateNotification)
 function cancelHierarchyMatchInside() {
+  // 如果没有当前元素类型的匹配层级，不执行任何操作
   if (!matchedLevelIndices[currentElementTypeKey]) {
     return;
   }
-  delete matchedLevelIndices[currentElementTypeKey]; // 重置当前元素类型的匹配层级索引
-  // 保持在查看内部模式，刷新界面以移除高亮
-  updateNotification(selectedElements.length); // <--- 修改点
+
+  // 检查当前选中元素是否仍然有效（可能已被删除）
+  // 过滤掉已经不在DOM中的元素
+  selectedElements = selectedElements.filter(el => document.body.contains(el));
+
+  // 如果过滤后没有元素了，清空选择并返回
+  if (selectedElements.length === 0) {
+    currentElementTypeKey = '';
+    parentChain = [];
+    parentChainIndex = 0;
+    childrenChain = [];
+    delete matchedLevelIndices[currentElementTypeKey];
+    isViewingChildren = false; // 退出查看内部模式
+    return;
+  }
+
+  // 获取当前匹配的层级
+  const matchedLevel = matchedLevelIndices[currentElementTypeKey];
+
+  // 重置当前元素类型的匹配层级索引
+  delete matchedLevelIndices[currentElementTypeKey];
+
+  // 如果当前元素类型存在，检查选中元素
+  if (currentElementTypeKey) {
+    const [tagName, className] = currentElementTypeKey.split('.');
+
+    // 获取当前选中的该类型元素
+    const currentTypeElements = selectedElements.filter(el =>
+      el.tagName.toLowerCase() === tagName &&
+      (el.className || '') === className
+    );
+
+    // 无论是否有选中的元素，都重新选择所有匹配当前元素类型的元素（不考虑层级）
+    // 清除当前类型元素的高亮
+    currentTypeElements.forEach(el => {
+      el.style.outline = '';
+    });
+
+    // 从选中列表中移除当前类型的元素
+    selectedElements = selectedElements.filter(el =>
+      !(el.tagName.toLowerCase() === tagName &&
+        (el.className || '') === className)
+    );
+
+    // 重新选择所有匹配当前元素类型的元素
+    const allMatchingElements = document.querySelectorAll(tagName);
+    const filteredElements = Array.from(allMatchingElements).filter(el =>
+      (el.className || '') === className
+    );
+
+    // 高亮所有匹配元素
+    filteredElements.forEach(el => {
+      el.style.outline = '2px solid blue';
+      selectedElements.push(el);
+    });
+
+    // 更新UI
+    updateNotification(selectedElements.length);
+
+    // 更新剪贴板
+    updateClipboard();
+  } else {
+    // 如果没有当前元素类型，只更新UI
+    updateNotification(selectedElements.length);
+  }
 }
 
 // =============================================
