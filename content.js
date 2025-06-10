@@ -208,7 +208,8 @@ document.addEventListener('keydown', function(event) {
     const textToCopy = updateClipboard();
     // 然后强制写入剪贴板，无论实时复制是否开启
     if (textToCopy !== undefined && textToCopy !== null) { // 确保有内容可写
-        navigator.clipboard.writeText(textToCopy)
+        // 使用新的通用复制函数
+        copyTextToClipboard(textToCopy)
             .then(() => {
                 // 显示复制成功提示
                 showTemporaryMessage('已复制选中内容到剪贴板');
@@ -2368,7 +2369,8 @@ function updateNotification(count) {
             const textToCopy = updateClipboard(); // 获取处理后的文本
             // 强制写入剪贴板
             if (textToCopy !== undefined && textToCopy !== null) {
-                 navigator.clipboard.writeText(textToCopy)
+                // 使用新的通用复制函数
+                copyTextToClipboard(textToCopy)
                     .then(() => {
                         showTemporaryMessage('已复制选中内容到剪贴板');
                     })
@@ -3036,6 +3038,63 @@ function cancelSelection() {
 // =============================================
 // 剪贴板管理系统 - 处理选中内容的复制和格式化
 // =============================================
+/**
+ * 统一的文本复制函数，支持安全和非安全上下文
+ * @param {string} textToCopy 要复制的文本
+ * @returns {Promise<void>}
+ */
+function copyTextToClipboard(textToCopy) {
+  // 返回一个 Promise，以便调用方可以处理成功或失败
+  return new Promise((resolve, reject) => {
+    // 优先使用现代、异步的 Clipboard API (仅在安全上下文可用)
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(textToCopy)
+        .then(() => {
+          // console.log('Clipboard API: Copied successfully');
+          resolve();
+        })
+        .catch(err => {
+          // console.error('Clipboard API: Failed to copy', err);
+          reject(err);
+        });
+    } else {
+      // 降级使用 document.execCommand('copy')
+      // 这种方法需要一个临时的 DOM 元素来选中其中的文本
+      const textArea = document.createElement('textarea');
+      textArea.value = textToCopy;
+
+      // 将 textarea 样式设置为在屏幕外，防止页面闪烁
+      textArea.style.position = 'fixed';
+      textArea.style.top = '-9999px';
+      textArea.style.left = '-9999px';
+
+      document.body.appendChild(textArea);
+
+      // 选中 textarea 中的内容
+      textArea.focus();
+      textArea.select();
+
+      try {
+        // 执行复制命令
+        const successful = document.execCommand('copy');
+        if (successful) {
+          // console.log('execCommand: Copied successfully');
+          resolve();
+        } else {
+          // console.error('execCommand: Failed to copy');
+          reject(new Error('Copy command was unsuccessful'));
+        }
+      } catch (err) {
+        // console.error('execCommand: Exception while copying', err);
+        reject(err);
+      } finally {
+        // 无论成功与否，都移除临时元素
+        document.body.removeChild(textArea);
+      }
+    }
+  });
+}
+
 // 更新剪贴板内容函数
 function updateClipboard() {
   if (selectedElements.length === 0) {
@@ -3147,7 +3206,8 @@ function updateClipboard() {
 
   // 仅在启用实时复制时才写入剪贴板
   if (isRealtimeCopyEnabled) {
-    navigator.clipboard.writeText(collectedText)
+    // 使用新的通用复制函数
+    copyTextToClipboard(collectedText)
       // .then(() => console.log('已更新剪贴板内容'))
       .catch(err => { /* console.error('更新剪贴板失败: ', err); */ });
   }
