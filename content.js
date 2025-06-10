@@ -3098,7 +3098,7 @@ function copyTextToClipboard(textToCopy) {
 // 更新剪贴板内容函数
 function updateClipboard() {
   if (selectedElements.length === 0) {
-    navigator.clipboard.writeText('').catch(err => {}); // 清空剪贴板
+    copyTextToClipboard('').catch(err => {}); // 使用通用函数清空剪贴板
     return; // 如果没有选中元素，不进行操作
   }
 
@@ -3116,7 +3116,7 @@ function updateClipboard() {
       parentChain = [];
       parentChainIndex = 0;
       childrenChain = [];
-      navigator.clipboard.writeText('').catch(err => {}); // 清空剪贴板
+      copyTextToClipboard('').catch(err => {}); // 使用通用函数清空剪贴板
       return;
     }
   }
@@ -3134,7 +3134,7 @@ function updateClipboard() {
 
   // 如果过滤后没有元素了，也直接返回
   if (elementsToCopy.length === 0) {
-      navigator.clipboard.writeText('').catch(err => {}); // 清空剪贴板
+      copyTextToClipboard('').catch(err => {}); // 使用通用函数清空剪贴板
       return;
   }
 
